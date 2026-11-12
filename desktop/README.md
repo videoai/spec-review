@@ -11,7 +11,7 @@ python3 -m venv .venv-mac
 
 Open `dist/ONVIF Spec Review.app`. Python, Git, GitHub CLI and their runtime dependencies are included. End users do not run a terminal command or web server. The app starts its own private loopback service on a random port and stops it when the window closes. A parent-process watcher also exits the service if the app crashes.
 
-The first prototype is built for Apple Silicon/macOS 26. It is ad-hoc signed for local testing, not Developer ID signed or notarized. A public downloadable release still needs signing/notarization, Intel/older-macOS builds if required, and a clean-machine packaging test. The native shell is AppKit/WebKit; a Windows shell remains separate future work. The Python service and viewer are shared.
+The first prototype is built for Apple Silicon/macOS 26. It is ad-hoc signed for local testing, not Developer ID signed or notarized. A public downloadable release still needs signing/notarization, Intel/older-macOS builds if required, and a clean-machine packaging test. The Mac native shell is AppKit/WebKit; the Windows prototype uses WinForms/WebView2. The Python service and viewer are shared.
 
 ## Workspace and credentials
 

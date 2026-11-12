@@ -30,6 +30,7 @@ internal sealed class ReviewWindow : Form
     private Process? backend;
     private ProcessJob? job;
     private Uri? origin;
+    private string? nativeHtmlUrl;
     private bool stopping;
     private bool switching;
     private bool allowClose;
@@ -79,8 +80,8 @@ internal sealed class ReviewWindow : Form
                     SmokeLog($"Navigation completed: {e.IsSuccess}, {e.WebErrorStatus}");
                     if (e.IsSuccess) await web.CoreWebView2.ExecuteScriptAsync("window.chrome.webview.postMessage({action:'smoke-ready'})");
                 };
-                web.CoreWebView2.NavigateToString("<html><body><h1>Windows host smoke test</h1><script>window.chrome.webview.postMessage({action:'smoke-ready'});</script></body></html>");
-                var timer = new System.Windows.Forms.Timer { Interval = 30000 };
+                NavigateHtml("<html><body><h1>Windows host smoke test</h1><script>window.chrome.webview.postMessage({action:'smoke-ready'});</script></body></html>");
+                var timer = new System.Windows.Forms.Timer { Interval = 60000 };
                 timer.Tick += (_, _) => { timer.Stop(); SmokeLog("Bridge timeout"); Environment.ExitCode = 1; allowClose = true; Close(); };
                 timer.Start();
                 return;
@@ -108,7 +109,7 @@ internal sealed class ReviewWindow : Form
 
     private async Task StartBackend()
     {
-        web.CoreWebView2.NavigateToString("<body style='font:20px system-ui;padding:60px;color:#164536'><h1>ONVIF Spec Review</h1><p>Opening your review workspace…</p></body>");
+        NavigateHtml("<body style='font:20px system-ui;padding:60px;color:#164536'><h1>ONVIF Spec Review</h1><p>Opening your review workspace…</p></body>");
         var folder = AppContext.BaseDirectory;
         var start = new ProcessStartInfo(Path.Combine(folder, "backend", "spec-review-service.exe"))
         {
@@ -149,12 +150,17 @@ internal sealed class ReviewWindow : Form
         web.CoreWebView2.Navigate(raw);
     }
 
+    private void NavigateHtml(string html)
+    {
+        nativeHtmlUrl = "data:text/html;charset=utf-8;base64," + Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(html));
+        web.CoreWebView2.Navigate(nativeHtmlUrl);
+    }
     private bool Local(Uri url) => origin != null && url.Scheme == "http" && url.Host == "127.0.0.1" && url.Port == origin.Port;
     private void NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
         if (smoke) SmokeLog("Navigation starting: " + e.Uri);
         if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var url)) { e.Cancel = true; return; }
-        if (url.Scheme == "about" || Local(url)) return;
+        if (url.Scheme == "about" || Local(url) || e.Uri == nativeHtmlUrl) return;
         e.Cancel = true; OpenExternal(url);
     }
     private static void OpenExternal(Uri url)
