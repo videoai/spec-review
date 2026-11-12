@@ -4,6 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [codex/windows-app]
+    tags: ['v*']
     paths:
       - '.github/workflows/windows.yml'
       - 'desktop/**'
@@ -74,3 +75,21 @@ jobs:
           path: dist/ONVIF-Spec-Review-Windows-x64.zip
           if-no-files-found: error
           retention-days: 14
+
+  release-windows:
+    needs: windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ONVIF-Spec-Review-Windows-x64
+          path: release-assets
+      - name: Attach Windows ZIP to existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: gh release upload "$RELEASE_TAG" release-assets/ONVIF-Spec-Review-Windows-x64.zip
