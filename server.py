@@ -9,12 +9,30 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse, parse_qs, urlencode, unquote
 
+TARGET_REPOSITORY='onvif/specs'
+
 def default_repo():
-    folder = Path(__file__).resolve().parent
-    try:
-        return Path(subprocess.check_output(['git', '-C', str(folder), 'rev-parse', '--show-toplevel'], stderr=subprocess.PIPE).decode().strip())
-    except (OSError, subprocess.CalledProcessError):
-        return folder
+    configured=os.environ.get('XML_REVIEW_REPO')
+    if configured:return Path(configured).expanduser()
+    folder=Path(__file__).resolve().parent
+    sibling=folder.parent/'specs'
+    if sibling.is_dir():
+        try:
+            remote=subprocess.check_output(['git','-C',str(sibling),'remote','get-url','origin'],stderr=subprocess.PIPE,timeout=5).decode().strip()
+            if re.fullmatch(r'(?:git@github.com:|https://github.com/|ssh://git@github.com/)onvif/specs(?:\.git)?',remote,re.I):return sibling
+        except (OSError,subprocess.SubprocessError):pass
+    return folder/'.cache'/'specs'
+
+def ensure_specs_checkout(repo):
+    repo=repo.resolve()
+    cached=Path(__file__).resolve().parent/'.cache'/'specs'
+    if not repo.exists():
+        if repo!=cached:raise ValueError('Specs checkout does not exist: '+str(repo))
+        repo.parent.mkdir(parents=True,exist_ok=True)
+        print('Downloading onvif/specs into '+str(repo)+'…',flush=True)
+        subprocess.check_call(['git','clone','--filter=blob:none','https://github.com/onvif/specs.git',str(repo)])
+    git('rev-parse','--git-dir')
+    if github_repo().lower()!=TARGET_REPOSITORY:raise ValueError('This viewer currently supports only onvif/specs. Use --repo /path/to/specs.')
 
 REPO = default_repo()
 def git(*args):
@@ -910,9 +928,9 @@ if __name__=='__main__':
     p.add_argument('--no-open',action='store_false',dest='open',help='Start without opening a browser (overrides --open)')
     args=p.parse_args(); REPO=args.repo.resolve()
     try:
-        git('rev-parse','--git-dir')
+        ensure_specs_checkout(REPO)
         httpd=ThreadingHTTPServer(('127.0.0.1',args.port),Handler)
-    except (OSError, subprocess.SubprocessError) as e:
+    except (OSError, ValueError, subprocess.SubprocessError) as e:
         p.exit(1, f'Cannot start XML Review: {e}\nTry --repo /path/to/specs or --port 8766.\n')
     url=f'http://127.0.0.1:{httpd.server_port}'
     print(f'XML Review: {url}\nRepository: {REPO}\nPress Ctrl+C to stop.',flush=True)

@@ -86,6 +86,7 @@ def build_site(output,prs):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',type=Path,default=server.REPO);p.add_argument('--output',type=Path,required=True);p.add_argument('--pr',type=int,action='append');p.add_argument('--fetch',action='store_true');args=p.parse_args();server.REPO=args.repo.resolve()
+    if server.github_repo().lower()!=server.TARGET_REPOSITORY:raise ValueError('This viewer currently supports only onvif/specs.')
     metadata=server.github_api('repos/'+server.github_repo(),force=True)
     if metadata.get('private') is not False or getattr(server.API_INFO,'value',{}).get('stale'):raise ValueError('Static publication requires a verified public GitHub repository.')
     if args.fetch:server.git('fetch','--no-tags','origin','+refs/heads/*:refs/remotes/origin/*')
