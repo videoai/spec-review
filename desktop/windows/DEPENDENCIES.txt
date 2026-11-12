@@ -1,0 +1,11 @@
+This app bundles open-source runtimes and tools. Upstream license files remain alongside their components.
+
+.NET 10 self-contained runtime: https://github.com/dotnet/runtime (MIT)
+WebView2 SDK: https://www.nuget.org/packages/Microsoft.Web.WebView2/1.0.4314.35
+Python: https://www.python.org/ (Python Software Foundation license)
+PyInstaller 6.22.3: https://github.com/pyinstaller/pyinstaller (GPL with distribution exception)
+Git for Windows MinGit 2.56.1: https://github.com/git-for-windows/git/releases/tag/v2.56.1.windows.1 (GPLv2; includes third-party licenses)
+GitHub CLI 2.104.0: https://github.com/cli/cli/releases/tag/v2.104.0 (MIT)
+
+Git source for the bundled version is available at the Git for Windows release linked above.
+This is an unsigned test distribution, not a signed public release.

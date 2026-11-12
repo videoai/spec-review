@@ -1,10 +1,16 @@
 """App-owned repository cache and durable review storage for onvif/specs."""
-import configparser, json, os, re, shutil, subprocess, threading, time
+import configparser, json, os, re, shutil, subprocess, sys, threading, time
 from pathlib import Path
 import server
 
 REMOTE='https://github.com/onvif/specs.git'
 STATE_PATTERNS=re.compile(r'xml-review-(?:notes|draft|reviewed|reset|submissions)-pr-[1-9][0-9]*\.json$')
+
+def default_app_root(platform=None,environ=None,home=None):
+    platform=platform or sys.platform;environ=os.environ if environ is None else environ;home=Path.home() if home is None else Path(home)
+    if platform=='win32':return Path(environ.get('LOCALAPPDATA') or home/'AppData/Local')/'ONVIF Spec Review'
+    if platform=='darwin':return home/'Library/Application Support/ONVIF Spec Review'
+    return Path(environ.get('XDG_DATA_HOME') or home/'.local/share')/'onvif-spec-review'
 
 class Workspace:
     def __init__(self,root=None,legacy=None,report=None,repository='onvif/specs'):
@@ -13,7 +19,7 @@ class Workspace:
         self.remote='https://github.com/'+repository+'.git'
         slug=repository.replace('/','-')
         self.report=report or (lambda message:None)
-        self.root=Path(root or Path.home()/'Library/Application Support/ONVIF Spec Review')
+        self.root=Path(root) if root else default_app_root()
         self.repo=self.root/('repositories/'+slug+'.git')
         self.reviews=self.root/('reviews/'+slug)
         self.metadata=self.root/('cache/'+slug)

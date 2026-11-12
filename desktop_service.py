@@ -1,5 +1,5 @@
 """Private loopback backend for the Mac application; never publishes credentials."""
-import hashlib, http.cookies, json, os, secrets, subprocess, threading, urllib.request
+import hashlib, http.cookies, json, os, secrets, subprocess, sys, threading, urllib.request
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs, urlencode
 import server
@@ -11,6 +11,13 @@ SESSION=secrets.token_urlsafe(32)
 SUBMIT_LOCK=threading.Lock()
 LOGIN=None
 LOGIN_MESSAGE=''
+
+def github_login_environment():
+    env=dict(os.environ)
+    if sys.platform=='darwin':env.setdefault('GH_BROWSER','/usr/bin/open')
+    # On Windows the native shell supplies a browser helper; gh's own default
+    # browser launcher is also valid when running the backend directly.
+    return env
 
 def github_write(endpoint,payload):
     token=server.github_token()
@@ -105,7 +112,7 @@ class Handler(server.Handler):
             if self.path=='/api/desktop/login':
                 if LOGIN is None or LOGIN.poll() is not None:
                     LOGIN_MESSAGE='Starting GitHub sign in…'
-                    LOGIN=subprocess.Popen(['gh','auth','login','--hostname','github.com','--git-protocol','https','--web','--skip-ssh-key'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=dict(os.environ,GH_BROWSER='/usr/bin/open'))
+                    LOGIN=subprocess.Popen(['gh','auth','login','--hostname','github.com','--git-protocol','https','--web','--skip-ssh-key'],stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True,env=github_login_environment())
                     def read_login():
                         global LOGIN_MESSAGE
                         for line in LOGIN.stdout:

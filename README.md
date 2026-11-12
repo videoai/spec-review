@@ -92,3 +92,11 @@ Tests cover comparison alignment, content identities, notes/review persistence, 
 ## Mac app prototype
 
 A native Mac app bundles the local viewer, Python, Git and GitHub CLI. See [Mac build and usage](desktop/README.md). The app restores direct, confirmed GitHub comment-review submission; the public Pages viewer continues to use copy/export.
+
+## Windows app prototype
+
+The **Build Windows app** GitHub Actions workflow builds a portable Windows x64 test ZIP. Download its `ONVIF-Spec-Review-Windows-x64` artifact, extract the ZIP completely, and run **ONVIF Spec Review.exe**. Keep the bundled files beside the executable. Python, .NET, Git and GitHub CLI are included. Microsoft Edge WebView2 Runtime must be installed (normally already present on Windows 11). See [Windows usage](desktop/windows/READ%20ME.txt).
+
+This initial build is unsigned. Windows or organisational policy may flag or block it. Signing can be added separately. The workflow runs the shared tests, checks the packaged backend against an isolated offline fixture, and starts the actual WebView2 host to verify its message bridge. Interactive testing on Windows is still needed. No signing credentials, GitHub tokens, caches or review data are packaged.
+
+The workflow runs on pushes to `codex/windows-app` and can also be dispatched once merged into the default branch. It does not deploy Pages or publish a release. Review state is stored under `%LOCALAPPDATA%\\ONVIF Spec Review`, separately for each supported repository.

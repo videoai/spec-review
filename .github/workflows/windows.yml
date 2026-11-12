@@ -1,0 +1,72 @@
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/windows-app]
+    paths:
+      - '.github/workflows/windows.yml'
+      - 'desktop/**'
+      - 'desktop_*.py'
+      - '*.py'
+      - '*.js'
+      - '*.cjs'
+      - 'index.html'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    if: github.repository == 'videoai/spec-review'
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.x'
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '22'
+      - name: Configure fixture Git identity and line endings
+        run: |
+          git config --global user.name "Spec Review CI"
+          git config --global user.email "ci@example.invalid"
+          git config --global core.autocrlf false
+      - name: Run shared tests
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        run: |
+          python -m unittest discover -p "test_*.py"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node test_frontend.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node test_static_frontend.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Install pinned packaging tool
+        run: python -m pip install PyInstaller==6.22.3
+      - name: Build portable executable and test bundled backend
+        run: python desktop/build_windows.py
+      - name: Smoke-test the Windows WebView2 host
+        run: |
+          $app = Join-Path $PWD "dist/ONVIF-Spec-Review-Windows-x64/ONVIF Spec Review.exe"
+          $process = Start-Process -FilePath $app -ArgumentList '--smoke-test' -PassThru
+          if (-not $process.WaitForExit(90000)) { $process.Kill(); throw 'Windows host smoke test timed out' }
+          if ($process.ExitCode -ne 0) { throw "Windows host smoke test failed: $($process.ExitCode)" }
+      - name: Upload Windows test ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: ONVIF-Spec-Review-Windows-x64
+          path: dist/ONVIF-Spec-Review-Windows-x64.zip
+          if-no-files-found: error
+          retention-days: 14

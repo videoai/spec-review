@@ -1,0 +1,21 @@
+ONVIF Spec Review — Windows x64 test build
+
+1. Extract the entire ZIP. Keep the executable, DLLs, backend and tools folders together.
+2. Double-click ONVIF Spec Review.exe. No Python, Git, GitHub CLI or .NET installation is needed.
+3. If the app reports WebView2 Runtime is missing, install Microsoft's Evergreen Runtime:
+   https://developer.microsoft.com/en-us/microsoft-edge/webview2/
+4. Select videoai/test-specs and PR #2 to experiment without affecting ONVIF:
+   https://github.com/videoai/test-specs/pull/2
+5. Add notes or suggested changes; Finish review previews and explicitly submits your feedback.
+
+This is an unsigned development build for Windows x64, intended for testing on Windows 11.
+Windows or your organization's policies may block unsigned downloads. A signed release is a separate distribution step.
+
+The app bundles a self-contained .NET runtime, Python, MinGit and GitHub CLI. A current WebView2 Runtime is also required; Windows 11 normally already includes it.
+GitHub CLI sign-in uses its standard OAuth permissions, which can cover other repositories. The app limits submissions to the selected supported repository. Existing gh logins are reused; logging out affects that shared login too.
+
+Notes, reviewed marks, preferences and downloaded Git data are stored under:
+%LOCALAPPDATA%\ONVIF Spec Review\
+No developer notes, repository cache, tokens or passwords are included in this ZIP.
+
+Actions submitted to onvif/specs are real feedback on that repository. Use videoai/test-specs for experiments.
