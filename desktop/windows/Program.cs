@@ -56,6 +56,7 @@ internal sealed class ReviewWindow : Form
             var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(root, "WebView2"));
             await web.EnsureCoreWebView2Async(environment);
             web.CoreWebView2.Settings.AreDevToolsEnabled = false;
+            web.CoreWebView2.Settings.IsWebMessageEnabled = true;
             web.CoreWebView2.Settings.AreHostObjectsAllowed = false;
             web.CoreWebView2.NavigationStarting += NavigationStarting;
             web.CoreWebView2.NewWindowRequested += (_, e) =>
@@ -73,9 +74,14 @@ internal sealed class ReviewWindow : Form
             if (smoke)
             {
                 // CI checks the actual WebView2 host/bridge with no GitHub login or data.
+                web.CoreWebView2.NavigationCompleted += async (_, e) =>
+                {
+                    SmokeLog($"Navigation completed: {e.IsSuccess}, {e.WebErrorStatus}");
+                    if (e.IsSuccess) await web.CoreWebView2.ExecuteScriptAsync("window.chrome.webview.postMessage({action:'smoke-ready'})");
+                };
                 web.CoreWebView2.NavigateToString("<html><body><h1>Windows host smoke test</h1><script>window.chrome.webview.postMessage({action:'smoke-ready'});</script></body></html>");
                 var timer = new System.Windows.Forms.Timer { Interval = 30000 };
-                timer.Tick += (_, _) => { timer.Stop(); Environment.ExitCode = 1; allowClose = true; Close(); };
+                timer.Tick += (_, _) => { timer.Stop(); SmokeLog("Bridge timeout"); Environment.ExitCode = 1; allowClose = true; Close(); };
                 timer.Start();
                 return;
             }
@@ -146,6 +152,7 @@ internal sealed class ReviewWindow : Form
     private bool Local(Uri url) => origin != null && url.Scheme == "http" && url.Host == "127.0.0.1" && url.Port == origin.Port;
     private void NavigationStarting(object? sender, CoreWebView2NavigationStartingEventArgs e)
     {
+        if (smoke) SmokeLog("Navigation starting: " + e.Uri);
         if (!Uri.TryCreate(e.Uri, UriKind.Absolute, out var url)) { e.Cancel = true; return; }
         if (url.Scheme == "about" || Local(url)) return;
         e.Cancel = true; OpenExternal(url);
@@ -159,6 +166,7 @@ internal sealed class ReviewWindow : Form
     {
         try
         {
+            if (smoke) SmokeLog("Web message: " + e.WebMessageAsJson);
             using var document = JsonDocument.Parse(e.WebMessageAsJson);
             var data = document.RootElement;
             var action = data.GetProperty("action").GetString();
@@ -215,9 +223,14 @@ internal sealed class ReviewWindow : Form
             backend.Dispose(); backend = null;
         }
     }
+    private void SmokeLog(string message)
+    {
+        var log = Environment.GetEnvironmentVariable("XML_REVIEW_SMOKE_LOG");
+        if (smoke && log != null) File.AppendAllText(log, message + Environment.NewLine);
+    }
     private void Fail(Exception error)
     {
-        if (smoke) { Console.Error.WriteLine(error); Environment.ExitCode = 1; allowClose = true; Close(); return; }
+        if (smoke) { SmokeLog(error.ToString()); Console.Error.WriteLine(error); Environment.ExitCode = 1; allowClose = true; Close(); return; }
         MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
     }
 }

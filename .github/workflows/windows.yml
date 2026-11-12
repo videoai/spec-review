@@ -61,9 +61,11 @@ jobs:
         run: python desktop/build_windows.py
       - name: Smoke-test the Windows WebView2 host
         run: |
+          $env:XML_REVIEW_SMOKE_LOG = Join-Path $env:RUNNER_TEMP "spec-review-host.log"
           $app = Join-Path $PWD "dist/ONVIF-Spec-Review-Windows-x64/ONVIF Spec Review.exe"
           $process = Start-Process -FilePath $app -ArgumentList '--smoke-test' -PassThru
           if (-not $process.WaitForExit(90000)) { $process.Kill(); throw 'Windows host smoke test timed out' }
+          if (Test-Path $env:XML_REVIEW_SMOKE_LOG) { Get-Content $env:XML_REVIEW_SMOKE_LOG }
           if ($process.ExitCode -ne 0) { throw "Windows host smoke test failed: $($process.ExitCode)" }
       - name: Upload Windows test ZIP
         uses: actions/upload-artifact@v4
