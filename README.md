@@ -88,3 +88,7 @@ node test_static_frontend.cjs
 ```
 
 Tests cover comparison alignment, content identities, notes/review persistence, reset/import rollback, backup validation, source locations, read-only GitHub feedback, copy/paste exports, and static publication without private local review data. No real GitHub comments are posted by tests.
+
+## Mac app prototype
+
+A native Mac app bundles the local viewer, Python, Git and GitHub CLI. See [Mac build and usage](desktop/README.md). The app restores direct, confirmed GitHub comment-review submission; the public Pages viewer continues to use copy/export.

@@ -14,7 +14,7 @@ window.REVIEW_STATIC=true;
     const connection=await db(),site=await loadManifest(),key=site.repository.toLowerCase()+':'+pr;
     return new Promise((resolve,reject)=>{
       const tx=connection.transaction('reviews',mutate?'readwrite':'readonly'),store=tx.objectStore('reviews'),request=store.get(key);let value;
-      request.onsuccess=()=>{try{value=request.result||ReviewCore.empty();if(mutate){mutate(value);store.put(value,key);}}catch(error){tx.abort();reject(error);}};
+      request.onsuccess=()=>{try{value=request.result||ReviewCore.empty();value.draft=ReviewCore.normalizeDraft(value.draft);if(mutate){mutate(value);store.put(value,key);}}catch(error){tx.abort();reject(error);}};
       tx.oncomplete=()=>resolve(value);tx.onerror=()=>reject(Error('Could not save browser review data. Back up your review and check available storage.'));tx.onabort=()=>reject(Error('Review storage transaction was cancelled.'));
     });
   }
@@ -72,7 +72,7 @@ window.REVIEW_STATIC=true;
     }
     if(route==='/api/reviewed'){await state(pr,value=>{if(payload.reviewed)value.reviewed[payload.key]=true;else delete value.reviewed[payload.key];});return {saved:true};}
     if(route==='/api/notes'){await state(pr,value=>{const blocks=value.notes[payload.review]||{};if(payload.text.trim())blocks[payload.block]={text:payload.text,path:payload.path,context:payload.context,pr:String(pr),versions:payload.versions,updated:new Date().toISOString()};else delete blocks[payload.block];value.notes[payload.review]=blocks;});return {saved:true};}
-    if(route==='/api/draft'){const value=await state(pr,value=>{const record={text:payload.text,versions:payload.versions,updated:new Date().toISOString()};if(payload.scope==='summary')value.draft.summary=payload.text.trim()?record:{};else if(payload.text.trim())value.draft.files={...value.draft.files,[payload.path]:record};else delete value.draft.files[payload.path];});return {saved:true,draft:value.draft};}
+    if(route==='/api/draft'){if(payload.scope!=='summary')throw Error('Use the PR summary for overall or file-wide feedback.');const value=await state(pr,value=>{const record={text:payload.text,versions:payload.versions,updated:new Date().toISOString()};value.draft={summary:payload.text.trim()?record:{},files:{}};});return {saved:true,draft:value.draft};}
     throw Error('Unsupported static review operation.');
   };
 })();

@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source = fs.readFileSync(__dirname+'/app.js','utf8');
 function fn(name, next) { return source.slice(source.indexOf('function '+name+'('), source.indexOf(next, source.indexOf('function '+name+'('))); }
-const context = { plain: text => text.replace(/<[^>]+>/g,''), download:(text,name)=>{context.exported={text,name};} };
+const context = { ReviewCore:require('./review-core.js'), plain: text => text.replace(/<[^>]+>/g,''), download:(text,name)=>{context.exported={text,name};} };
 vm.createContext(context);
 vm.runInContext(fn('updateMessage',"$('fetchLatest').onclick"),context);
 const old=[{key:'same',context:'A|scope',reviewed:true},{key:'old',context:'B|scope',reviewed:true}];

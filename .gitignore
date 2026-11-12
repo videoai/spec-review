@@ -4,3 +4,8 @@ _site/
 __pycache__/
 *.pyc
 .DS_Store
+
+dist/
+build/
+*.spec
+.venv-mac/

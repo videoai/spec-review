@@ -10,6 +10,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import urlparse, parse_qs, urlencode, unquote
 
 TARGET_REPOSITORY='onvif/specs'
+SUPPORTED_REPOSITORIES=('onvif/specs','videoai/test-specs')
 
 def default_repo():
     configured=os.environ.get('XML_REVIEW_REPO')
@@ -32,9 +33,12 @@ def ensure_specs_checkout(repo):
         print('Downloading onvif/specs into '+str(repo)+'…',flush=True)
         subprocess.check_call(['git','clone','--filter=blob:none','https://github.com/onvif/specs.git',str(repo)])
     git('rev-parse','--git-dir')
-    if github_repo().lower()!=TARGET_REPOSITORY:raise ValueError('This viewer currently supports only onvif/specs. Use --repo /path/to/specs.')
+    if github_repo().lower() not in SUPPORTED_REPOSITORIES:raise ValueError('Unsupported review repository.')
 
 REPO = default_repo()
+# Desktop storage is independent of its disposable Git cache. CLI remains compatible.
+STATE_DIR = None
+API_CACHE_DIR = None
 def git(*args):
     return subprocess.check_output(['git','-C',str(REPO),*args], stderr=subprocess.PIPE, timeout=30)
 def source(ref, path):
@@ -246,6 +250,7 @@ class GitHubError(ValueError):
         super().__init__(message); self.retry_at=retry_at
 
 def api_cache_path():
+    if API_CACHE_DIR is not None:return Path(API_CACHE_DIR)/'xml-review-github-cache.json'
     location=Path(git('rev-parse','--git-path','xml-review-github-cache.json').decode().strip())
     return location if location.is_absolute() else REPO/location
 
@@ -381,6 +386,7 @@ def fetch_latest():
 
 NOTES_LOCK=threading.Lock()
 def notes_path():
+    if STATE_DIR is not None:return Path(STATE_DIR)/'xml-review-notes.json'
     location=Path(git('rev-parse','--git-path','xml-review-notes.json').decode().strip())
     return location if location.is_absolute() else REPO/location
 
@@ -404,11 +410,16 @@ def save_note(data):
     review=data.get('review',''); block=data.get('block',''); text=data.get('text','')
     if not all(re.fullmatch(r'[a-f0-9]{64}',v) for v in (review,block)): raise ValueError('Invalid note location')
     if not isinstance(text,str) or len(text)>20000: raise ValueError('Notes must be at most 20,000 characters')
+    suggestion=None
+    if data.get('suggestion') is not None:
+        versions=data.get('versions',{})
+        suggestion=validated_suggestion(dict(data,left=versions.get('left',''),right=versions.get('right','')),data['suggestion'])
     with NOTES_LOCK:
         number=pr_number(data.get('pr'))
         notes=read_notes(number); entry=notes.setdefault(review,{})
-        if text.strip():
+        if text.strip() or suggestion is not None:
             entry[block]={'text':text,'context':str(data.get('context',''))[:2000],'path':str(data.get('path',''))[:500], 'pr':number,'versions':data.get('versions',{}),'updated':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            if suggestion is not None:entry[block]['suggestion']=suggestion
         else: entry.pop(block,None)
         file=scoped_notes_path(number)
         fd,tmp=tempfile.mkstemp(dir=file.parent,prefix='.xml-review-notes-')
@@ -417,27 +428,33 @@ def save_note(data):
             os.replace(tmp,file)
         finally:
             if os.path.exists(tmp): os.unlink(tmp)
-    return {'saved':True}
+    return {'saved':True,'note':entry.get(block)}
 
 def draft_path(pr):
     number=pr_number(pr)
     if not number:raise ValueError('Select a PR first')
     return notes_path().with_name('xml-review-draft-pr-'+number+'.json')
 
+def normalize_draft(draft):
+    summary=dict(draft.get('summary') or {})
+    parts=[summary.get('text','').strip()]
+    for path,note in (draft.get('files') or {}).items():
+        text=note.get('text','').strip()
+        if text:parts.append('### '+path+'\n\n'+text)
+    text='\n\n'.join(part for part in parts if part)
+    return {'summary':dict(summary,text=text) if text else {},'files':{}}
+
 def read_draft(pr):
     file=draft_path(pr)
-    return json.loads(file.read_text()) if file.exists() else {'summary':{},'files':{}}
+    return normalize_draft(json.loads(file.read_text())) if file.exists() else {'summary':{},'files':{}}
 
 def save_draft(data):
-    number=pr_number(data.get('pr'));scope=data.get('scope');text=data.get('text','')
-    if scope not in ('summary','file') or not isinstance(text,str) or len(text)>20000:raise ValueError('Invalid draft note; maximum 20,000 characters')
-    path=data.get('path','')
-    if scope=='file' and (not path or PurePosixPath(path).is_absolute() or '..' in PurePosixPath(path).parts):raise ValueError('Invalid file note path')
+    number=pr_number(data.get('pr'));text=data.get('text','')
+    if data.get('scope')!='summary':raise ValueError('Use the PR summary for overall or file-wide feedback')
+    if not isinstance(text,str) or len(text)>58000:raise ValueError('Invalid PR summary; maximum 58,000 characters')
     with NOTES_LOCK:
-        draft=read_draft(number);note={'text':text,'versions':data.get('versions',{}),'updated':datetime.datetime.now(datetime.timezone.utc).isoformat()}
-        if scope=='summary':draft['summary']=note if text.strip() else {}
-        elif text.strip():draft['files'][path]=note
-        else:draft['files'].pop(path,None)
+        note={'text':text,'versions':data.get('versions',{}),'updated':datetime.datetime.now(datetime.timezone.utc).isoformat()}
+        draft={'summary':note if text.strip() else {},'files':{}}
         write_api_cache(draft_path(number),draft)
     return {'saved':True,'draft':draft}
 
@@ -674,11 +691,16 @@ def validate_backup(backup,pr):
     def path(value):
         if not isinstance(value,str) or not value or len(value)>500 or PurePosixPath(value).is_absolute() or '..' in PurePosixPath(value).parts:
             raise ValueError('Invalid backup file path')
-    def note(value,block=False):
+    def note(value,block=False,max_length=20000):
         object_map(value)
-        if not isinstance(value.get('text'),str) or len(value['text'])>20000:raise ValueError('Invalid backup note')
+        if not isinstance(value.get('text'),str) or len(value['text'])>max_length:raise ValueError('Invalid backup note')
         if not isinstance(value.get('updated',''),str) or not isinstance(value.get('versions',{}),dict):raise ValueError('Invalid backup note metadata')
         if any(not isinstance(v,str) for v in value.get('versions',{}).values()):raise ValueError('Invalid backup versions')
+        if value.get('suggestion') is not None:
+            suggestion=object_map(value['suggestion'])
+            if not isinstance(suggestion.get('text'),str) or len(suggestion['text'])>20000 or not isinstance(suggestion.get('original'),str) or len(suggestion['original'])>20000:raise ValueError('Invalid backup suggestion')
+            if not re.fullmatch('[a-f0-9]{40,64}',suggestion.get('right','')):raise ValueError('Invalid backup suggestion commit')
+            if any(type(suggestion.get(key)) is not int or suggestion[key]<1 for key in ('startLine','line')) or suggestion['startLine']>suggestion['line']:raise ValueError('Invalid backup suggestion range')
         if block:
             path(value.get('path'))
             if not isinstance(value.get('context',''),str) or len(value.get('context',''))>2000:raise ValueError('Invalid backup context')
@@ -689,7 +711,7 @@ def validate_backup(backup,pr):
         key(identifier)
         if type(value) is not bool:raise ValueError('Invalid backup reviewed mark')
     draft=object_map(backup.get('draft'))
-    if draft.get('summary'):note(draft['summary'])
+    if draft.get('summary'):note(draft['summary'],max_length=BACKUP_LIMIT)
     elif draft.get('summary')!={}:raise ValueError('Invalid backup summary')
     for filename,value in object_map(draft.get('files')).items():path(filename);note(value)
     return {'pr':int(number),'notes':sum(len(v) for v in backup['notes'].values()),'reviewed':sum(backup['reviewed'].values()),
@@ -763,6 +785,51 @@ def source_change_spans(a,b):
             if op!='equal':rows.append(row)
     return rows
 
+def suggestion_target(data):
+    left=data.get('left','');right=data.get('right','');path=data.get('path','');block=data.get('block','')
+    if not all(isinstance(sha,str) and re.fullmatch('[a-f0-9]{40,64}',sha) for sha in (left,right)):raise ValueError('Select a committed PR comparison first')
+    result=comparison(left,right,path,data.get('pr'))
+    changed=[row for row in result['rows'] if row['status']!='same']
+    index=next((i for i,row in enumerate(changed) if row['id']==block),None)
+    def unavailable(reason):return {'available':False,'reason':reason}
+    if index is None:return unavailable('This change is no longer in the current comparison.')
+    if changed[index]['status']=='removed':return unavailable('A removed block has no proposed source lines. Add a regular note instead.')
+    if result['mode'] not in ('docbook','source'):return unavailable('Suggestions are available for XML and text source changes.')
+    names=git('diff','--name-status','-z','-M',left,right).decode().split('\0')
+    if any(re.fullmatch('R[0-9]+',value) and path in names[i+1:i+3] for i,value in enumerate(names)):return unavailable('Renamed files require a regular review note.')
+    a,b=file_bytes(left,path),file_bytes(right,path)
+    if result['mode']=='docbook':
+        aa=rich_blocks(a,left,path,locations=True)[1];bb=rich_blocks(b,right,path,locations=True)[1]
+        spans=[row for row in compare(aa,bb) if row['status']!='same']
+    else:spans=source_change_spans(text_content(a),text_content(b))
+    if len(spans)!=len(changed) or not spans[index].get('sourceRight'):return unavailable('No reliable proposed source range for this rendered change.')
+    start,end=spans[index]['sourceRight']
+    if end-start>=60:return unavailable('This block is too large for a suggestion. Add a regular note instead.')
+    def ranges(context):return diff_line_ranges(git('diff','--no-ext-diff','--no-textconv','--unified='+str(context),left,right,'--',path).decode(errors='replace'))['RIGHT']
+    if not any(max(start,first)<=min(end,last) for first,last in ranges(0)):return unavailable('This is a rendered-only change, such as automatic numbering. It has no changed source lines.')
+    if not any(first<=start<=end<=last for first,last in ranges(3)):return unavailable('The complete source block extends outside the GitHub diff. Use a regular note for this change.')
+    lines=b.decode('utf-8-sig').splitlines();original='\n'.join(lines[start-1:end])
+    if len(original)>20000:return unavailable('This source block is too large for a suggestion.')
+    return {'available':True,'review':result['review'],'block':block,'right':right,'startLine':start,'line':end,'original':original,'path':path}
+
+def validated_suggestion(data,value):
+    if not isinstance(value,dict) or not isinstance(value.get('text'),str) or len(value['text'])>20000:raise ValueError('Invalid suggested source replacement')
+    target=suggestion_target(data)
+    if not target['available']:raise ValueError(target['reason'])
+    if data.get('review') and data['review']!=target['review']:raise ValueError('The comparison changed. Reopen this note.')
+    if value['text']==target['original']:raise ValueError('Edit the suggested source before saving it.')
+    if re.search(r'^\s*`{3,}',value['text'],re.M):raise ValueError('A suggested replacement cannot contain Markdown code fences.')
+    # Recheck stored locations against the current source before posting anything.
+    if 'original' in value and any(value.get(key)!=target[key] for key in ('original','right','startLine','line')):raise ValueError('The suggestion source changed. Edit and save the suggestion again.')
+    if target['path'].lower().endswith('.xml'):
+        original=source(target['right'],target['path']).decode('utf-8-sig').splitlines()
+        replacement=value['text'].splitlines()
+        modified='\n'.join(original[:target['startLine']-1]+replacement+original[target['line']:])
+        if '<!DOCTYPE' in modified.upper() or '<!ENTITY' in modified.upper():raise ValueError('DTD/entity declarations are not supported')
+        try:ET.fromstring(modified)
+        except ET.ParseError as error:raise ValueError('The suggested replacement would make the XML invalid: '+str(error)) from None
+    return dict(target,text=value['text'])
+
 def chunk_anchors(left,right,doc):
     # Location metadata is opt-in so existing comparison and note identities do not change.
     fallback=[{'subjectType':'FILE','reason':'No reliable changed source line for this chunk.'} for change in doc['changes']]
@@ -800,7 +867,7 @@ def github_location(repo,number,path,anchor):
 
 def comment_location(comment):
     anchor=comment['anchor']
-    if anchor['subjectType']=='LINE':return ('Proposed' if anchor['side']=='RIGHT' else 'Base')+' line '+str(anchor['line'])
+    if anchor['subjectType']=='LINE':return ('Proposed' if anchor['side']=='RIGHT' else 'Base')+(' lines '+str(anchor['startLine'])+'–'+str(anchor['line']) if anchor.get('startLine') else ' line '+str(anchor['line']))
     return 'File note' if comment['kind']=='file' else 'Chunk thread on file · '+anchor['reason']
 
 def prepare_review(data):
@@ -808,18 +875,25 @@ def prepare_review(data):
     if not all(re.fullmatch('[a-f0-9]{40,64}',sha) for sha in (left,right)):raise ValueError('Select a committed PR comparison first')
     summary=review_summary(left,right,number)
     with NOTES_LOCK:draft=read_draft(number)
+    draft=normalize_draft(draft)
     body=draft.get('summary',{}).get('text','').strip();comments=[]
     for doc in summary['documents']:
-        path=doc['path'];file_note=draft.get('files',{}).get(path,{}).get('text','').strip()
-        if file_note:comments.append({'path':path,'kind':'file','heading':'File note','body':file_note,'anchor':{'subjectType':'FILE'}})
-        anchors=chunk_anchors(left,right,doc) if any(change.get('note') and change['note'].get('text','').strip() for change in doc['changes']) else []
+        path=doc['path']
+        anchors=chunk_anchors(left,right,doc) if any(change.get('note') and (change['note'].get('text','').strip() or change['note'].get('suggestion')) for change in doc['changes']) else []
         for index,change in enumerate(doc['changes']):
             note=change.get('note')
-            if not note or not note.get('text','').strip():continue
-            parts=['## '+change['heading'],'',note['text'],'','Before:',quoted(readable(change['left'])),'','After:',quoted(readable(change['right']))]
+            if not note or not (note.get('text','').strip() or note.get('suggestion')):continue
+            anchor=anchors[index]
+            if note.get('suggestion'):
+                target=validated_suggestion({'pr':number,'left':left,'right':right,'path':path,'block':change['id'],'review':doc['review']},note['suggestion'])
+                anchor={'subjectType':'LINE','side':'RIGHT','line':target['line']}
+                if target['startLine']!=target['line']:anchor.update(startLine=target['startLine'],startSide='RIGHT')
+                parts=[note['text'],'','```suggestion',target['text'],'```']
+            elif anchor['subjectType']=='LINE':parts=[note['text']]
+            else:parts=['## '+change['heading'],'',note['text'],'','Before:',quoted(readable(change['left'])),'','After:',quoted(readable(change['right']))]
             comments.append({'path':path,'kind':'chunk','heading':change['heading'],'block':change.get('id',str(index)),
-                             'body':'\n'.join(parts).strip(),'anchor':anchors[index]})
-    # A file note can still be posted for a file that the renderer could not interpret.
+                             'body':'\n'.join(parts).strip(),'anchor':anchor})
+    # General feedback belongs in the review summary; threads are for individual changes.
     body=(body+'\n\n' if body else '')+f'Reviewed with ONVIF Spec Review at `{right[:8]}`.'
     if not comments and not draft.get('summary',{}).get('text','').strip():raise ValueError('Add a PR summary, file note, or change note first')
     if any(len(comment['body'])>60000 for comment in comments) or len(body)>60000:raise ValueError('A review comment is too large for GitHub; shorten the notes before submitting')
@@ -881,6 +955,8 @@ class Handler(BaseHTTPRequestHandler):
                 with NOTES_LOCK: data={'notes':read_notes(q.get('pr',[None])[0]).get(q.get('review',[''])[0],{})}
             elif u.path=='/api/context':
                 data={'id':hashlib.sha256(str(REPO).encode()).hexdigest(),'repo':github_repo()}
+            elif u.path=='/api/suggestion':
+                data=suggestion_target({key:q.get(key,[''])[0] for key in ('pr','left','right','path','block')})
             elif u.path=='/api/review-summary':
                 data=review_summary(q.get('left',[''])[0],q.get('right',[''])[0],q.get('pr',[None])[0])
             elif u.path=='/api/prs':

@@ -277,31 +277,47 @@ class ReviewTests(unittest.TestCase):
     def test_summary_and_file_notes_persist_and_reset_per_pr(self):
         with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'):
             server.save_draft({'pr':877,'scope':'summary','text':'PR feedback'})
-            server.save_draft({'pr':877,'scope':'file','path':'doc/A.xml','text':'File feedback'})
+            server.write_api_cache(server.draft_path(877),{'summary':server.read_draft(877)['summary'],'files':{'doc/A.xml':{'text':'File feedback'}}})
             server.save_draft({'pr':878,'scope':'summary','text':'Other PR'})
-            self.assertEqual(server.read_draft(877)['summary']['text'],'PR feedback')
+            self.assertEqual(server.read_draft(877)['summary']['text'],'PR feedback\n\n### doc/A.xml\n\nFile feedback')
             server.reset_review({'pr':877})
             self.assertEqual(server.read_draft(877),{'summary':{},'files':{}})
             self.assertEqual(server.read_draft(878)['summary']['text'],'Other PR')
             server.reset_review({'pr':877},undo=True)
-            self.assertEqual(server.read_draft(877)['files']['doc/A.xml']['text'],'File feedback')
+            self.assertIn('File feedback',server.read_draft(877)['summary']['text']);self.assertEqual(server.read_draft(877)['files'],{})
             with self.assertRaises(ValueError):server.save_draft({'pr':877,'scope':'file','path':'../outside','text':'No'})
     def test_review_preview_only_includes_commented_files(self):
         with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'review_summary',return_value=self.review_fixture()),patch.object(server,'github_token',return_value=None):
             server.save_draft({'pr':877,'scope':'summary','text':'PR feedback'})
-            server.save_draft({'pr':877,'scope':'file','path':'doc/A.xml','text':'File feedback'})
+            server.write_api_cache(server.draft_path(877),{'summary':server.read_draft(877)['summary'],'files':{'doc/A.xml':{'text':'File feedback'}}})
             preview=server.prepare_review({'pr':877,'left':'a'*40,'right':'b'*40})
             self.assertIn('PR feedback',preview['body'])
-            self.assertEqual([f['path'] for f in preview['files']],['doc/A.xml','doc/A.xml'])
-            self.assertEqual([f['kind'] for f in preview['files']],['file','chunk'])
-            self.assertIn('File feedback',preview['files'][0]['body'])
-            self.assertIn('Change feedback',preview['files'][1]['body'])
-            self.assertNotIn('Change feedback',preview['files'][0]['body'])
-            self.assertNotIn('File feedback',preview['files'][1]['body'])
+            self.assertEqual([f['path'] for f in preview['files']],['doc/A.xml'])
+            self.assertEqual([f['kind'] for f in preview['files']],['chunk'])
+            self.assertIn('### doc/A.xml\n\nFile feedback',preview['body'])
+            self.assertIn('Change feedback',preview['files'][0]['body'])
+            self.assertNotIn('Change feedback',preview['body'])
+            self.assertNotIn('File feedback',preview['files'][0]['body'])
             self.assertNotIn('Ignored old',preview['markdown'])
             self.assertNotIn('canSubmit',preview)
     def test_reflow_ignored(self):
         self.assertEqual(server.compare(self.book('<para>Two\n words</para>'),self.book('<para>Two words</para>'))[1]['status'],'same')
+    def test_file_feedback_folds_once_without_losing_content_or_metadata(self):
+        legacy={'summary':{'text':'Overall feedback','versions':{'right':'b'*40}},'files':{'old.xml':{'text':'Please check terminology.'},'other.xml':{'text':'Please check timeouts.'}}}
+        merged=server.normalize_draft(legacy)
+        self.assertEqual(merged['files'],{})
+        self.assertIn('### old.xml\n\nPlease check terminology.',merged['summary']['text'])
+        self.assertIn('### other.xml\n\nPlease check timeouts.',merged['summary']['text'])
+        self.assertEqual(merged['summary']['versions'],legacy['summary']['versions'])
+        self.assertEqual(server.normalize_draft(merged),merged)
+        self.assertEqual(len(legacy['files']),2)
+        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'):
+            server.write_api_cache(server.draft_path(877),legacy)
+            self.assertEqual(server.read_draft(877),merged)
+            server.save_draft({'pr':877,'scope':'summary','text':merged['summary']['text']+'\nEdited.'})
+            self.assertEqual(server.read_draft(877)['summary']['text'].count('Please check terminology.'),1)
+            with self.assertRaisesRegex(ValueError,'Use the PR summary'):server.save_draft({'pr':877,'scope':'file','path':'A.xml','text':'New file note'})
+
 class ChunkThreadTests(unittest.TestCase):
     def setUp(self):
         self.folder=tempfile.TemporaryDirectory();self.addCleanup(self.folder.cleanup)
@@ -346,15 +362,19 @@ class ChunkThreadTests(unittest.TestCase):
         comparison=server.comparison(left,right,'A.yaml',877)
         for i,row in enumerate(row for row in comparison['rows'] if row['status']!='same'):
             server.save_note({'pr':877,'review':comparison['review'],'block':row['id'],'text':'Chunk '+str(i),'path':'A.yaml'})
-        server.save_draft({'pr':877,'scope':'file','path':'A.yaml','text':'Whole file'})
+        server.write_api_cache(server.draft_path(877),{'summary':{},'files':{'A.yaml':{'text':'Whole file'}}})
         with patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'github_token',return_value='test-token'),patch.object(server,'github_api',return_value={'state':'open','base':{'sha':left},'head':{'sha':right}}):
             preview=server.prepare_review({'pr':877,'left':left,'right':right})
-            self.assertEqual(len(preview['files']),3)
-            self.assertEqual([comment['kind'] for comment in preview['files']],['file','chunk','chunk'])
-            self.assertIn('Chunk 0',preview['files'][1]['body']);self.assertNotIn('Chunk 1',preview['files'][1]['body'])
+            self.assertEqual(len(preview['files']),2)
+            self.assertIn('### A.yaml\n\nWhole file',preview['body'])
+            self.assertEqual([comment['kind'] for comment in preview['files']],['chunk','chunk'])
+            self.assertIn('Chunk 0',preview['files'][0]['body']);self.assertNotIn('Chunk 1',preview['files'][0]['body'])
+            for index,comment in enumerate(preview['files']):
+                self.assertEqual(comment['displayBody'],'Chunk '+str(index))
+                self.assertNotIn('Before:',comment['body']);self.assertNotIn('After:',comment['body']);self.assertNotIn('## ',comment['body'])
             self.assertIn('Proposed line 1',preview['markdown']);self.assertIn('Proposed line 3',preview['markdown'])
             markers=[comment['body'].split('<!-- onvif-file-note:')[1] for comment in preview['files']]
-            self.assertEqual(len(set(markers)),3)
+            self.assertEqual(len(set(markers)),2)
     def test_patch_zero_length_sides_are_not_commentable(self):
         ranges=server.diff_line_ranges('@@ -0,0 +1,2 @@\n@@ -7 +8,0 @@')
         self.assertEqual(ranges,{'LEFT':[(7,7)],'RIGHT':[(1,2)]})
@@ -373,7 +393,8 @@ class BackupFeedbackTests(unittest.TestCase):
             self.assertEqual(server.read_draft(877)['summary']['text'],'Original')
             server.import_backup({**data,'confirm':True})
             exported=server.review_backup(877)
-            for key in ['notes','draft','reviewed']:self.assertEqual(exported[key],data['backup'][key])
+            for key in ['notes','reviewed']:self.assertEqual(exported[key],data['backup'][key])
+            self.assertEqual(exported['draft'],server.normalize_draft(data['backup']['draft']))
             self.assertEqual(server.read_draft(878)['summary']['text'],'Other PR')
             server.reset_review({'pr':877},undo=True)
             self.assertEqual(server.read_draft(877)['summary']['text'],'Original')

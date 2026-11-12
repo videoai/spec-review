@@ -25,6 +25,6 @@ class StandaloneTests(unittest.TestCase):
             self.assertEqual(clone.call_args.args[0],['git','clone','--filter=blob:none','https://github.com/onvif/specs.git',str(cached)])
     def test_tool_repository_cannot_be_mistaken_for_specs(self):
         with tempfile.TemporaryDirectory() as folder,patch.object(server,'git',return_value=b'.git'),patch.object(server,'github_repo',return_value='videoai/spec-review'):
-            with self.assertRaisesRegex(ValueError,'only onvif/specs'):server.ensure_specs_checkout(Path(folder).resolve())
+            with self.assertRaisesRegex(ValueError,'Unsupported review repository'):server.ensure_specs_checkout(Path(folder).resolve())
 
 if __name__=='__main__':unittest.main()
