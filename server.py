@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Local, read-only Git DocBook comparison server. Python standard library only."""
 import time, math, functools, posixpath
+import xml.parsers.expat
 import hashlib, tempfile, datetime
 import os, shutil, urllib.request, urllib.error
 import argparse, difflib, html, json, re, subprocess, threading, webbrowser, xml.etree.ElementTree as ET
@@ -29,9 +30,20 @@ def source(ref, path):
     return git('show',sha+':'+path)
 def name(e): return e.tag.split('}')[-1]
 def esc(s): return html.escape(s or '')
-def load(data,asset_resolver=None,rich=True):
+def load(data,asset_resolver=None,rich=True,locations=False):
     if b'<!DOCTYPE' in data.upper() or b'<!ENTITY' in data.upper(): raise ValueError('DTD/entity declarations are not supported')
     root=ET.fromstring(data)
+    spans={}
+    if locations:
+        parser=xml.parsers.expat.ParserCreate();ordered=[];stack=[]
+        def start(tag,attrs):
+            span=[parser.CurrentLineNumber,None];ordered.append(span);stack.append(span)
+        def end(tag):stack.pop()[1]=parser.CurrentLineNumber
+        parser.StartElementHandler=start;parser.EndElementHandler=end;parser.Parse(data,True)
+        spans=dict(zip(root.iter(),ordered))
+    def located(block,element):
+        if locations:block['source']=spans[element]
+        return block
     def normalize(e, preserve=False):
         preserve = preserve or name(e) in ('programlisting', 'screen')
         if not preserve and e.text: e.text = re.sub(r"\s+", " ", e.text)
@@ -147,12 +159,12 @@ def load(data,asset_resolver=None,rich=True):
                 else: nums=numbers
                 if name(c)=='title':
                     title=''.join(c.itertext()).strip(); prefix='.'.join(map(str,numbers))+' ' if numbers else ''
-                    blocks.append({'key':section+':title','html':f'<h{min(level+1,5)}>'+esc(prefix+title)+f'</h{min(level+1,5)}>','section':title,'kind':'title'})
+                    blocks.append(located({'key':section+':title','html':f'<h{min(level+1,5)}>'+esc(prefix+title)+f'</h{min(level+1,5)}>','section':title,'kind':'title'},c))
                 elif name(c)=='titleabbrev' or (name(c)=='mediaobject' and (not rich or n=='info')): continue
                 else: walk(c,level,section,nums)
         else:
             value=render(e)
-            if value.strip(): blocks.append({'key':section+':'+n,'html':value,'section':section,'kind':n})
+            if value.strip(): blocks.append(located({'key':section+':'+n,'html':value,'section':section,'kind':n},e))
     walk(root)
     return blocks
 
@@ -186,6 +198,8 @@ def compare(a,b):
         if any(block and 'displayHtml' in block for block in (x,y)):
             row['_identity']={'left':old_left,'right':old_right,'status':status,'heading':row['heading']}
             row['reviewLeft']=old_left;row['reviewRight']=old_right
+        for side,block in [('sourceLeft',x),('sourceRight',y)]:
+            if block and 'source' in block:row[side]=block['source']
         rows.append(row)
     # Section IDs anchor alignment; a second pass aligns blocks within each run.
     for op,i,j,k,l in difflib.SequenceMatcher(None,[(x['key'],x['html']) for x in a],[(x['key'],x['html']) for x in b],autojunk=False).get_opcodes():
@@ -546,10 +560,10 @@ def resolve_image(repo,ref,document,fileref):
         return {'blob':blob,'url':'/api/asset?'+urlencode({'blob':blob})}
     except subprocess.SubprocessError:return None
 
-def rich_blocks(data,ref,path):
+def rich_blocks(data,ref,path,locations=False):
     if data is None:return [],[]
     canonical=load(data,rich=False)
-    rendered=load(data,asset_resolver=lambda fileref:resolve_image(str(REPO),ref,path,fileref))
+    rendered=load(data,asset_resolver=lambda fileref:resolve_image(str(REPO),ref,path,fileref),locations=locations)
     # Block keys plus occurrence connect richer presentation with the previous identities.
     buckets={}
     for block in canonical:buckets.setdefault(block['key'],[]).append(block)
@@ -557,6 +571,7 @@ def rich_blocks(data,ref,path):
     for display in rendered:
         queue=buckets.get(display['key'],[]);block=queue.pop(0) if queue else display
         value=dict(block,displayHtml=display['html'])
+        if locations:value['source']=display['source']
         assets=re.findall(r'data-asset-id="([a-f0-9]+)"',display['html'])
         if assets:value['html']+='<!-- assets:'+','.join(assets)+' -->'
         enriched.append(value)
@@ -617,12 +632,158 @@ def review_summary(left,right,pr=None):
             documents.append({'path':path,'error':str(e),'changes':[]})
     return {'left':left,'right':right,'documents':documents}
 
-SUBMIT_LOCK=threading.Lock()
-def submission_path(pr):return draft_path(pr).with_name('xml-review-submissions-pr-'+pr_number(pr)+'.json')
-def preview_path(pr):return draft_path(pr).with_name('xml-review-preview-pr-'+pr_number(pr)+'.json')
+BACKUP_LIMIT=10*1024*1024
+
+def review_backup(pr):
+    number=pr_number(pr)
+    if not number:raise ValueError('Select a PR first')
+    with NOTES_LOCK, REVIEWED_LOCK:
+        return {'format':'onvif-spec-review','version':1,'repository':github_repo(),'pr':int(number),
+                'exportedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                'notes':read_notes(number),'draft':read_draft(number),'reviewed':read_reviewed(number)}
+
+def validate_backup(backup,pr):
+    number=pr_number(pr)
+    if not number or not isinstance(backup,dict) or backup.get('format')!='onvif-spec-review' or backup.get('version')!=1:
+        raise ValueError('Not a supported ONVIF Spec Review backup')
+    if backup.get('repository','').lower()!=github_repo().lower() or pr_number(backup.get('pr'))!=number:
+        raise ValueError('Backup belongs to a different repository or PR')
+    def object_map(value):
+        if not isinstance(value,dict):raise ValueError('Invalid backup data')
+        return value
+    def key(value):
+        if not re.fullmatch('[a-f0-9]{64}',value):raise ValueError('Invalid backup review identifier')
+    def path(value):
+        if not isinstance(value,str) or not value or len(value)>500 or PurePosixPath(value).is_absolute() or '..' in PurePosixPath(value).parts:
+            raise ValueError('Invalid backup file path')
+    def note(value,block=False):
+        object_map(value)
+        if not isinstance(value.get('text'),str) or len(value['text'])>20000:raise ValueError('Invalid backup note')
+        if not isinstance(value.get('updated',''),str) or not isinstance(value.get('versions',{}),dict):raise ValueError('Invalid backup note metadata')
+        if any(not isinstance(v,str) for v in value.get('versions',{}).values()):raise ValueError('Invalid backup versions')
+        if block:
+            path(value.get('path'))
+            if not isinstance(value.get('context',''),str) or len(value.get('context',''))>2000:raise ValueError('Invalid backup context')
+    for review,blocks in object_map(backup.get('notes')).items():
+        key(review)
+        for block,value in object_map(blocks).items():key(block);note(value,True)
+    for identifier,value in object_map(backup.get('reviewed')).items():
+        key(identifier)
+        if type(value) is not bool:raise ValueError('Invalid backup reviewed mark')
+    draft=object_map(backup.get('draft'))
+    if draft.get('summary'):note(draft['summary'])
+    elif draft.get('summary')!={}:raise ValueError('Invalid backup summary')
+    for filename,value in object_map(draft.get('files')).items():path(filename);note(value)
+    return {'pr':int(number),'notes':sum(len(v) for v in backup['notes'].values()),'reviewed':sum(backup['reviewed'].values()),
+            'fileNotes':len(draft['files']),'summary':bool(draft['summary'])}
+
+def import_backup(data):
+    backup=data.get('backup');number=pr_number(data.get('pr'));counts=validate_backup(backup,number)
+    if data.get('confirm') is not True:return counts
+    # Keep the previous state in the same undo slot used by Reset. Roll back all files if a write fails.
+    with NOTES_LOCK, REVIEWED_LOCK:
+        previous={'notes':read_notes(number),'draft':read_draft(number),'reviewed':read_reviewed(number)}
+        paths={'notes':scoped_notes_path(number),'draft':draft_path(number),'reviewed':reviewed_path(number)}
+        write_api_cache(reset_backup_path(number),previous)
+        try:
+            for kind,file in paths.items():write_api_cache(file,backup[kind])
+        except Exception:
+            for kind,file in paths.items():write_api_cache(file,previous[kind])
+            raise
+    return {**counts,'saved':True,'canUndo':True}
+
+def github_feedback(pr,force=False):
+    number=pr_number(pr)
+    if not number:raise ValueError('Select a PR first')
+    repo=github_repo();items=[];warnings=[];metadata=[]
+    sources=[('conversation',f'repos/{repo}/issues/{number}/comments'),
+             ('review',f'repos/{repo}/pulls/{number}/reviews'),('file',f'repos/{repo}/pulls/{number}/comments')]
+    for kind,endpoint in sources:
+        try:
+            for page in range(1,101):
+                batch=github_api(endpoint+f'?per_page=100&page={page}',force=force)
+                meta=dict(getattr(API_INFO,'value',{}));metadata.append(meta)
+                if meta.get('stale'):warnings.append(meta.get('warning') or 'Cached feedback may be out of date')
+                for entry in batch:
+                    if kind=='review' and entry.get('state')=='PENDING':continue
+                    if not entry.get('body','').strip() and kind!='review':continue
+                    items.append({'id':str(entry['id']),'kind':kind,'author':(entry.get('user') or {}).get('login','Deleted user'),
+                                  'body':entry.get('body') or '', 'url':entry.get('html_url',''),
+                                  'created':entry.get('submitted_at') or entry.get('created_at') or '',
+                                  'path':entry.get('path'),'line':entry.get('line'),'originalLine':entry.get('original_line'),
+                                  'side':entry.get('side'),'replyTo':entry.get('in_reply_to_id'),'state':entry.get('state'),
+                                  'outdated':kind=='file' and entry.get('subject_type')!='file' and entry.get('line') is None})
+                if len(batch)<100:break
+            else:warnings.append('Feedback truncated after 10,000 entries in '+kind)
+        except Exception as error:warnings.append(kind+': '+str(error))
+    return {'pr':int(number),'items':sorted(items,key=lambda item:(item['created'],item['id'])),
+            'warnings':list(dict.fromkeys(warnings)),'cached':any(m.get('cached') for m in metadata),
+            'fetchedAt':min((m['fetchedAt'] for m in metadata if m.get('fetchedAt')),default=None)}
+
 
 def readable(markup):return html.unescape(re.sub(r'<[^>]+>','',markup)).strip()
 def quoted(value):return '\n'.join('> '+line for line in value.splitlines())
+
+def diff_line_ranges(patch):
+    ranges={'LEFT':[],'RIGHT':[]}
+    for line in patch.splitlines():
+        match=re.match(r'^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@',line)
+        if match:
+            a,ac,b,bc=match.groups()
+            for side,start,count in [('LEFT',a,ac),('RIGHT',b,bc)]:
+                count=int(count) if count is not None else 1
+                if count:ranges[side].append((int(start),int(start)+count-1))
+    return ranges
+
+def source_change_spans(a,b):
+    left=a.splitlines(keepends=True);right=b.splitlines(keepends=True);rows=[]
+    for op,i,j,k,l in difflib.SequenceMatcher(None,left,right,autojunk=False).get_opcodes():
+        for offset in range(0,max(j-i,l-k),35):
+            row={}
+            if i+offset<j:row['sourceLeft']=[i+offset+1,min(j,i+offset+35)]
+            if k+offset<l:row['sourceRight']=[k+offset+1,min(l,k+offset+35)]
+            if op!='equal':rows.append(row)
+    return rows
+
+def chunk_anchors(left,right,doc):
+    # Location metadata is opt-in so existing comparison and note identities do not change.
+    fallback=[{'subjectType':'FILE','reason':'No reliable changed source line for this chunk.'} for change in doc['changes']]
+    try:
+        path=doc['path'];mode=doc.get('mode')
+        if mode not in ('docbook','source'):return fallback
+        names=git('diff','--name-status','-z','-M',left,right).decode().split('\0')
+        for index,status in enumerate(names):
+            if re.fullmatch('R[0-9]+',status) and path in names[index+1:index+3]:return fallback
+        a,b=file_bytes(left,path),file_bytes(right,path)
+        if mode=='docbook':
+            aa=rich_blocks(a,left,path,locations=True)[1];bb=rich_blocks(b,right,path,locations=True)[1]
+            spans=[row for row in compare(aa,bb) if row['status']!='same']
+        else:spans=source_change_spans(text_content(a),text_content(b))
+        if len(spans)!=len(doc['changes']):return fallback
+        patch=git('diff','--no-ext-diff','--no-textconv','--unified=0',left,right,'--',path).decode(errors='replace')
+        ranges=diff_line_ranges(patch);result=[]
+        for row in spans:
+            anchor=None
+            for side,key in [('RIGHT','sourceRight'),('LEFT','sourceLeft')]:
+                if key not in row:continue
+                start,end=row[key]
+                for first,last in ranges[side]:
+                    if max(start,first)<=min(end,last):
+                        anchor={'subjectType':'LINE','side':side,'line':max(start,first)};break
+                if anchor:break
+            result.append(anchor or {'subjectType':'FILE','reason':'This rendered change has no changed source line (for example automatic numbering).'})
+        return result
+    except (ValueError,OSError,subprocess.SubprocessError,ET.ParseError,xml.parsers.expat.ExpatError):return fallback
+
+def github_location(repo,number,path,anchor):
+    fragment='diff-'+hashlib.sha256(path.encode()).hexdigest()
+    if anchor['subjectType']=='LINE':fragment+=('R' if anchor['side']=='RIGHT' else 'L')+str(anchor['line'])
+    return 'https://github.com/'+repo+'/pull/'+str(number)+'/files#'+fragment
+
+def comment_location(comment):
+    anchor=comment['anchor']
+    if anchor['subjectType']=='LINE':return ('Proposed' if anchor['side']=='RIGHT' else 'Base')+' line '+str(anchor['line'])
+    return 'File note' if comment['kind']=='file' else 'Chunk thread on file · '+anchor['reason']
 
 def prepare_review(data):
     number=pr_number(data.get('pr'));repo=github_repo();left=data.get('left','');right=data.get('right','')
@@ -631,13 +792,15 @@ def prepare_review(data):
     with NOTES_LOCK:draft=read_draft(number)
     body=draft.get('summary',{}).get('text','').strip();comments=[]
     for doc in summary['documents']:
-        parts=[];file_note=draft.get('files',{}).get(doc['path'],{}).get('text','').strip()
-        if file_note:parts.extend(['## File note',file_note,''])
-        for change in doc['changes']:
+        path=doc['path'];file_note=draft.get('files',{}).get(path,{}).get('text','').strip()
+        if file_note:comments.append({'path':path,'kind':'file','heading':'File note','body':file_note,'anchor':{'subjectType':'FILE'}})
+        anchors=chunk_anchors(left,right,doc) if any(change.get('note') and change['note'].get('text','').strip() for change in doc['changes']) else []
+        for index,change in enumerate(doc['changes']):
             note=change.get('note')
             if not note or not note.get('text','').strip():continue
-            parts.extend(['## '+change['heading'],'','Before:',quoted(readable(change['left'])),'','After:',quoted(readable(change['right'])),'','Note:',note['text'],''])
-        if parts:comments.append({'path':doc['path'],'body':'\n'.join(parts).strip()})
+            parts=['## '+change['heading'],'',note['text'],'','Before:',quoted(readable(change['left'])),'','After:',quoted(readable(change['right']))]
+            comments.append({'path':path,'kind':'chunk','heading':change['heading'],'block':change.get('id',str(index)),
+                             'body':'\n'.join(parts).strip(),'anchor':anchors[index]})
     # A file note can still be posted for a file that the renderer could not interpret.
     body=(body+'\n\n' if body else '')+f'Reviewed with ONVIF Spec Review at `{right[:8]}`.'
     if not comments and not draft.get('summary',{}).get('text','').strip():raise ValueError('Add a PR summary, file note, or change note first')
@@ -645,80 +808,31 @@ def prepare_review(data):
     content={'repo':repo,'pr':int(number),'left':left,'right':right,'body':body,'files':comments}
     digest=hashlib.sha256(json.dumps(content,sort_keys=True).encode()).hexdigest()
     content['id']=digest;content['displayBody']=body;content['body']+='\n\n<!-- onvif-spec-review:'+digest+' -->'
-    for comment in content['files']:
+    for index,comment in enumerate(content['files']):
+        comment['location']=comment_location(comment)
+        comment['url']=github_location(repo,number,comment['path'],comment['anchor'])
         comment['displayBody']=comment['body']
-        comment['body']+='\n\n<!-- onvif-file-note:'+hashlib.sha256((digest+comment['path']).encode()).hexdigest()+' -->'
+        comment['body']+='\n\n<!-- onvif-file-note:'+hashlib.sha256((digest+str(index)+comment['path']).encode()).hexdigest()+' -->'
     content['url']='https://github.com/'+repo+'/pull/'+number
-    content['canSubmit']=bool(github_token());content['incomplete']=[doc['path'] for doc in summary['documents'] if doc.get('error')]
+    content['incomplete']=[doc['path'] for doc in summary['documents'] if doc.get('error')]
     lines=['# Review for '+repo+' PR #'+number,'','Base commit: '+left,'Proposed commit: '+right,'',content['displayBody'],'']
-    for comment in comments:lines.extend(['# '+comment['path'],'',comment['displayBody'],''])
+    for comment in comments:lines.extend(['# '+comment['path']+' · '+comment['location'],'',comment['displayBody'],''])
     content['markdown']='\n'.join(lines)
-    with NOTES_LOCK:write_api_cache(preview_path(number),content)
     return content
-
-def github_write(endpoint,payload):
-    token=github_token()
-    if not token:raise ValueError('Sign in with gh auth login or set GH_TOKEN to submit a review')
-    headers={'Accept':'application/vnd.github+json','User-Agent':'ONVIF-Spec-Review','Authorization':'Bearer '+token,'Content-Type':'application/json'}
-    request=urllib.request.Request('https://api.github.com/'+endpoint,data=json.dumps(payload).encode(),headers=headers,method='POST')
-    try:
-        with urllib.request.urlopen(request,timeout=30) as response:result=json.load(response)
-    except urllib.error.HTTPError as error:raise github_error(error) from None
-    if result.get('errors'):raise ValueError('GitHub: '+'; '.join(str(error.get('message','Review request failed')) for error in result['errors']))
-    return result
-
-def submit_review(data):
-    number=pr_number(data.get('pr'))
-    if data.get('confirm') is not True:raise ValueError('Confirm the review preview before submitting')
-    if not SUBMIT_LOCK.acquire(blocking=False):raise ValueError('A review submission is already in progress')
-    try:
-        preview=json.loads(preview_path(number).read_text())
-        if data.get('id')!=preview['id']:raise ValueError('Preview changed; open it again before submitting')
-        # Rebuild from saved drafts so edits in another tab invalidate old previews.
-        current=prepare_review({'pr':number,'left':preview['left'],'right':preview['right']})
-        if current['id']!=preview['id']:raise ValueError('Notes changed since preview; reopen the preview')
-        if not github_token():raise ValueError('Sign in with gh auth login or set GH_TOKEN to submit')
-        remote=github_api(f'repos/{preview["repo"]}/pulls/{number}',force=True)
-        if getattr(API_INFO,'value',{}).get('stale'):raise ValueError('Cannot submit using stale GitHub metadata; refresh after GitHub becomes available')
-        if remote.get('state')!='open' or remote['head']['sha']!=preview['right']:raise ValueError('The PR changed or closed. Refresh and review the latest version before submitting')
-        try:ancestor=git('merge-base',remote['base']['sha'],remote['head']['sha']).decode().strip()
-        except subprocess.SubprocessError:raise ValueError('Fetch latest before submitting; current PR history is not available locally') from None
-        if ancestor!=preview['left']:raise ValueError('The PR base changed; refresh before submitting')
-        file=submission_path(number)
-        journal=json.loads(file.read_text()) if file.exists() else {};entry=journal.get(preview['id'])
-        if entry:
-            if entry.get('state')=='submitted':return {'submitted':True,'url':entry['url'],'alreadySubmitted':True}
-            raise ValueError('This submission was already started. Check the PR and any pending GitHub review before trying again; automatic retries are blocked to avoid duplicate comments.')
-        entry={'state':'starting','url':preview['url']};journal[preview['id']]=entry;write_api_cache(file,journal)
-        try:
-            review=github_write(f'repos/{preview["repo"]}/pulls/{number}/reviews',{'commit_id':preview['right'],'body':preview['body']})
-            entry.update(state='pending',review_id=review['id'],review_node_id=review['node_id'],url=review.get('html_url') or preview['url']);write_api_cache(file,journal)
-            mutation='mutation($input:AddPullRequestReviewThreadInput!){addPullRequestReviewThread(input:$input){thread{id}}}'
-            for comment in preview['files']:
-                entry['state']='adding-file-comment';entry['path']=comment['path'];write_api_cache(file,journal)
-                github_write('graphql',{'query':mutation,'variables':{'input':{'pullRequestReviewId':review['node_id'],'path':comment['path'],'subjectType':'FILE','body':comment['body']}}})
-            entry['state']='submitting';write_api_cache(file,journal)
-            result=github_write(f'repos/{preview["repo"]}/pulls/{number}/reviews/{review["id"]}/events',{'event':'COMMENT','body':preview['body']})
-            entry.update(state='submitted',url=result.get('html_url') or entry['url']);write_api_cache(file,journal)
-            return {'submitted':True,'url':entry['url']}
-        except Exception as error:
-            entry.update(state='needs-attention',error=str(error));write_api_cache(file,journal)
-            raise ValueError('Submission incomplete: '+str(error)+'. Check '+entry['url']+' for a pending or submitted review. The tool will not automatically repeat the submission.') from None
-    finally:SUBMIT_LOCK.release()
 
 class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         try:
-            if self.path not in ('/api/notes','/api/fetch','/api/reviewed','/api/reset','/api/undo-reset','/api/draft','/api/review-preview','/api/submit-review'): self.send_error(404); return
+            if self.path not in ('/api/notes','/api/fetch','/api/reviewed','/api/reset','/api/undo-reset','/api/draft','/api/review-preview','/api/import-backup'): self.send_error(404); return
             origin=self.headers.get('Origin')
             if origin and origin!='http://'+self.headers.get('Host',''): raise ValueError('Origin mismatch')
             if self.headers.get('Content-Type')!='application/json': raise ValueError('JSON required')
             size=int(self.headers.get('Content-Length','0'))
-            if not 0<size<=100000: raise ValueError('Invalid note size')
+            if not 0<size<=(BACKUP_LIMIT if self.path=='/api/import-backup' else 100000): raise ValueError('Invalid note size')
             payload=json.loads(self.rfile.read(size))
-            if self.path=='/api/draft':result=save_draft(payload)
+            if self.path=='/api/import-backup':result=import_backup(payload)
+            elif self.path=='/api/draft':result=save_draft(payload)
             elif self.path=='/api/review-preview':result=prepare_review(payload)
-            elif self.path=='/api/submit-review':result=submit_review(payload)
             elif self.path in ('/api/reset','/api/undo-reset'):result=reset_review(payload,undo=self.path=='/api/undo-reset')
             elif self.path=='/api/fetch':result=fetch_latest()
             elif self.path=='/api/reviewed':result=save_reviewed(payload)
@@ -735,6 +849,10 @@ class Handler(BaseHTTPRequestHandler):
                 tips=git('for-each-ref','--format=%(refname:short) %(objectname:short=8)','refs/heads','refs/remotes').decode().splitlines()
                 data['labels']={line.rsplit(' ',1)[0]:line.rsplit(' ',1)[0]+' · '+line.rsplit(' ',1)[1] for line in tips}
                 data['labels'].update({ref:version_label(ref) for ref in ('WORKTREE','HEAD')})
+            elif u.path=='/api/backup':
+                data=review_backup(q.get('pr',[None])[0])
+            elif u.path=='/api/feedback':
+                data=github_feedback(q.get('pr',[None])[0],force=q.get('refresh',['0'])[0]=='1')
             elif u.path=='/api/draft':
                 with NOTES_LOCK:data=read_draft(q.get('pr',[None])[0])
             elif u.path=='/api/reset-status':
@@ -775,8 +893,8 @@ class Handler(BaseHTTPRequestHandler):
                 mime=image_mime(payload)
                 if not mime:raise ValueError('Unsupported image preview')
                 self.send_response(200);self.send_header('Content-Type',mime);self.send_header('X-Content-Type-Options','nosniff');self.send_header('Content-Security-Policy',"sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'");self.send_header('Cache-Control','private, max-age=600');self.end_headers();self.wfile.write(payload);return
-            elif u.path=='/app.js':
-                payload=Path(__file__).with_name('app.js').read_bytes(); self.send_response(200); self.send_header('Content-Type','text/javascript; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(payload); return
+            elif u.path in ('/app.js','/review-core.js','/pages.js'):
+                payload=Path(__file__).with_name(u.path[1:]).read_bytes(); self.send_response(200); self.send_header('Content-Type','text/javascript; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(payload); return
             elif u.path=='/':
                 payload=Path(__file__).with_name('index.html').read_bytes(); self.send_response(200); self.send_header('Content-Type','text/html; charset=utf-8'); self.send_header('Cache-Control','no-store'); self.end_headers(); self.wfile.write(payload); return
             else: self.send_error(404); return

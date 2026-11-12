@@ -292,40 +292,141 @@ class ReviewTests(unittest.TestCase):
             server.save_draft({'pr':877,'scope':'file','path':'doc/A.xml','text':'File feedback'})
             preview=server.prepare_review({'pr':877,'left':'a'*40,'right':'b'*40})
             self.assertIn('PR feedback',preview['body'])
-            self.assertEqual([f['path'] for f in preview['files']],['doc/A.xml'])
+            self.assertEqual([f['path'] for f in preview['files']],['doc/A.xml','doc/A.xml'])
+            self.assertEqual([f['kind'] for f in preview['files']],['file','chunk'])
             self.assertIn('File feedback',preview['files'][0]['body'])
-            self.assertIn('Change feedback',preview['files'][0]['body'])
+            self.assertIn('Change feedback',preview['files'][1]['body'])
+            self.assertNotIn('Change feedback',preview['files'][0]['body'])
+            self.assertNotIn('File feedback',preview['files'][1]['body'])
             self.assertNotIn('Ignored old',preview['markdown'])
-            self.assertFalse(preview['canSubmit'])
-    def test_submit_prepares_file_threads_then_comment_review_once(self):
-        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'review_summary',return_value=self.review_fixture()),patch.object(server,'github_token',return_value='test-token'),patch.object(server,'github_api',return_value={'state':'open','head':{'sha':'b'*40},'base':{'sha':'a'*40}}),patch.object(server,'git',return_value=('a'*40+'\n').encode()),patch.object(server,'github_write') as write:
-            server.API_INFO.value={'stale':False}
-            preview=server.prepare_review({'pr':877,'left':'a'*40,'right':'b'*40})
-            url='https://github.com/org/repo/pull/877#pullrequestreview-12'
-            write.side_effect=[{'id':12,'node_id':'review-node','html_url':url},{'data':{'addPullRequestReviewThread':{'thread':{'id':'thread'}}}},{'html_url':url}]
-            result=server.submit_review({'pr':877,'id':preview['id'],'confirm':True})
-            self.assertTrue(result['submitted']);self.assertEqual(write.call_count,3)
-            calls=write.call_args_list
-            self.assertNotIn('event',calls[0].args[1])
-            self.assertEqual(calls[1].args[1]['variables']['input']['subjectType'],'FILE')
-            self.assertNotIn('line',calls[1].args[1]['variables']['input'])
-            self.assertEqual(calls[2].args[1]['event'],'COMMENT')
-            self.assertTrue(server.submit_review({'pr':877,'id':preview['id'],'confirm':True})['alreadySubmitted'])
-            self.assertEqual(write.call_count,3)
-    def test_submission_rejects_stale_head_without_posting(self):
-        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'review_summary',return_value=self.review_fixture()),patch.object(server,'github_token',return_value='test-token'),patch.object(server,'github_api',return_value={'state':'open','head':{'sha':'c'*40},'base':{'sha':'a'*40}}),patch.object(server,'github_write') as write:
-            server.API_INFO.value={'stale':False};preview=server.prepare_review({'pr':877,'left':'a'*40,'right':'b'*40})
-            with self.assertRaisesRegex(ValueError,'changed or closed'):server.submit_review({'pr':877,'id':preview['id'],'confirm':True})
-            write.assert_not_called()
-    def test_submission_requires_confirmation_and_blocks_uncertain_retries(self):
-        with patch.object(server,'github_write') as write:
-            with self.assertRaisesRegex(ValueError,'Confirm'):server.submit_review({'pr':877})
-            write.assert_not_called()
-        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'review_summary',return_value=self.review_fixture()),patch.object(server,'github_token',return_value='test-token'),patch.object(server,'github_api',return_value={'state':'open','head':{'sha':'b'*40},'base':{'sha':'a'*40}}),patch.object(server,'git',return_value=('a'*40+'\n').encode()),patch.object(server,'github_write',side_effect=TimeoutError('Unknown result')) as write:
-            server.API_INFO.value={'stale':False};preview=server.prepare_review({'pr':877,'left':'a'*40,'right':'b'*40})
-            with self.assertRaisesRegex(ValueError,'Submission incomplete'):server.submit_review({'pr':877,'id':preview['id'],'confirm':True})
-            with self.assertRaisesRegex(ValueError,'already started'):server.submit_review({'pr':877,'id':preview['id'],'confirm':True})
-            self.assertEqual(write.call_count,1)
+            self.assertNotIn('canSubmit',preview)
     def test_reflow_ignored(self):
         self.assertEqual(server.compare(self.book('<para>Two\n words</para>'),self.book('<para>Two words</para>'))[1]['status'],'same')
+class ChunkThreadTests(unittest.TestCase):
+    def setUp(self):
+        self.folder=tempfile.TemporaryDirectory();self.addCleanup(self.folder.cleanup)
+        self.repo=Path(self.folder.name);self.patch=patch.object(server,'REPO',self.repo);self.patch.start();self.addCleanup(self.patch.stop)
+        server.git('init');server.git('config','user.name','Review Test');server.git('config','user.email','test@example.invalid')
+    def commits(self,path,before,after):
+        file=self.repo/path;file.parent.mkdir(parents=True,exist_ok=True)
+        if before is not None:file.write_text(before)
+        server.git('add','.');server.git('commit','--allow-empty','-m','Base');left=server.git('rev-parse','HEAD').decode().strip()
+        if after is None:file.unlink()
+        else:file.write_text(after)
+        server.git('add','-A');server.git('commit','--allow-empty','-m','Proposed');right=server.git('rev-parse','HEAD').decode().strip()
+        return left,right
+    def doc(self,left,right,path):return server.review_summary(left,right,877)['documents'][0]
+    def test_xml_chunks_anchor_to_distinct_source_lines_without_changing_note_ids(self):
+        old='<book>\n<title>Review</title>\n<chapter xml:id="scope">\n<title>Scope</title>\n<para>Old é one.</para>\n<para>Unchanged.</para>\n<para>Old two.</para>\n</chapter>\n</book>\n'
+        left,right=self.commits('A.xml',old,old.replace('Old','New'))
+        before=server.comparison(left,right,'A.xml',877)
+        doc=self.doc(left,right,'A.xml');anchors=server.chunk_anchors(left,right,doc)
+        self.assertEqual(anchors,[{'subjectType':'LINE','side':'RIGHT','line':5},{'subjectType':'LINE','side':'RIGHT','line':7}])
+        self.assertEqual(server.comparison(left,right,'A.xml',877),before)
+        self.assertNotIn('source',server.load(old.encode())[0])
+    def test_numbering_only_change_falls_back_to_independent_file_thread(self):
+        old='<book>\n<chapter xml:id="scope">\n<title>Scope</title>\n<para>Same.</para>\n</chapter>\n</book>\n'
+        new=old.replace('<chapter xml:id="scope">','<chapter xml:id="intro"><title>Intro</title><para>New.</para></chapter>\n<chapter xml:id="scope">')
+        left,right=self.commits('A.xml',old,new);doc=self.doc(left,right,'A.xml');anchors=server.chunk_anchors(left,right,doc)
+        index=next(i for i,row in enumerate(doc['changes']) if row['heading']=='Scope')
+        self.assertEqual(anchors[index]['subjectType'],'FILE')
+        self.assertIn('no changed source line',anchors[index]['reason'])
+    def test_added_source_and_removed_source_choose_correct_side(self):
+        left,right=self.commits('A.yaml',None,'value: new\n')
+        self.assertEqual(server.chunk_anchors(left,right,self.doc(left,right,'A.yaml')),[{'subjectType':'LINE','side':'RIGHT','line':1}])
+        # Reuse current head as a new base, then remove the file.
+        (self.repo/'A.yaml').unlink();server.git('add','-A');server.git('commit','-m','Remove');removed=server.git('rev-parse','HEAD').decode().strip()
+        self.assertEqual(server.chunk_anchors(right,removed,self.doc(right,removed,'A.yaml')),[{'subjectType':'LINE','side':'LEFT','line':1}])
+    def test_long_source_chunks_use_their_own_line_ranges(self):
+        left,right=self.commits('A.yaml',''.join('old '+str(i)+'\n' for i in range(80)),''.join('new '+str(i)+'\n' for i in range(80)))
+        anchors=server.chunk_anchors(left,right,self.doc(left,right,'A.yaml'))
+        self.assertEqual([anchor['line'] for anchor in anchors],[1,36,71])
+    def test_separate_chunk_exports_and_file_note_have_line_or_file_target(self):
+        left,right=self.commits('A.yaml','old 1\nsame\nold 2\n','new 1\nsame\nnew 2\n')
+        comparison=server.comparison(left,right,'A.yaml',877)
+        for i,row in enumerate(row for row in comparison['rows'] if row['status']!='same'):
+            server.save_note({'pr':877,'review':comparison['review'],'block':row['id'],'text':'Chunk '+str(i),'path':'A.yaml'})
+        server.save_draft({'pr':877,'scope':'file','path':'A.yaml','text':'Whole file'})
+        with patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'github_token',return_value='test-token'),patch.object(server,'github_api',return_value={'state':'open','base':{'sha':left},'head':{'sha':right}}):
+            preview=server.prepare_review({'pr':877,'left':left,'right':right})
+            self.assertEqual(len(preview['files']),3)
+            self.assertEqual([comment['kind'] for comment in preview['files']],['file','chunk','chunk'])
+            self.assertIn('Chunk 0',preview['files'][1]['body']);self.assertNotIn('Chunk 1',preview['files'][1]['body'])
+            self.assertIn('Proposed line 1',preview['markdown']);self.assertIn('Proposed line 3',preview['markdown'])
+            markers=[comment['body'].split('<!-- onvif-file-note:')[1] for comment in preview['files']]
+            self.assertEqual(len(set(markers)),3)
+    def test_patch_zero_length_sides_are_not_commentable(self):
+        ranges=server.diff_line_ranges('@@ -0,0 +1,2 @@\n@@ -7 +8,0 @@')
+        self.assertEqual(ranges,{'LEFT':[(7,7)],'RIGHT':[(1,2)]})
+
+class BackupFeedbackTests(unittest.TestCase):
+    def backup(self):
+        return {'format':'onvif-spec-review','version':1,'repository':'org/repo','pr':877,
+                'notes':{'a'*64:{'b'*64:{'text':'Block note','path':'doc/A.xml','context':'Before/after','versions':{'left':'a'*40,'right':'b'*40},'pr':'877'}}},
+                'draft':{'summary':{'text':'Summary'},'files':{'doc/A.xml':{'text':'File feedback'}}},'reviewed':{'c'*64:True}}
+    def test_backup_preview_restore_and_undo_preserve_other_prs(self):
+        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'):
+            server.save_draft({'pr':877,'scope':'summary','text':'Original'})
+            server.save_draft({'pr':878,'scope':'summary','text':'Other PR'})
+            data={'pr':877,'backup':self.backup()}
+            self.assertEqual(server.import_backup(data)['notes'],1)
+            self.assertEqual(server.read_draft(877)['summary']['text'],'Original')
+            server.import_backup({**data,'confirm':True})
+            exported=server.review_backup(877)
+            for key in ['notes','draft','reviewed']:self.assertEqual(exported[key],data['backup'][key])
+            self.assertEqual(server.read_draft(878)['summary']['text'],'Other PR')
+            server.reset_review({'pr':877},undo=True)
+            self.assertEqual(server.read_draft(877)['summary']['text'],'Original')
+            self.assertEqual(server.read_reviewed(877),{})
+    def test_invalid_backups_never_write(self):
+        import copy
+        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'write_api_cache') as write:
+            bad=[]
+            for field,value in [('version',2),('repository','other/repo'),('pr',878),('reviewed',{'c'*64:'yes'}),('notes',[]),('draft',{'summary':{},'files':{'../outside':{'text':'No'}}})]:
+                backup=copy.deepcopy(self.backup());backup[field]=value;bad.append(backup)
+            backup=copy.deepcopy(self.backup());backup['notes']['a'*64]['b'*64]['text']='x'*20001;bad.append(backup)
+            backup=copy.deepcopy(self.backup());backup['draft']['summary']['versions']={'left':{'unexpected':'object'}};bad.append(backup)
+            for backup in bad:
+                with self.assertRaises(ValueError):server.import_backup({'pr':877,'backup':backup,'confirm':True})
+            write.assert_not_called()
+    def test_import_rolls_back_failed_write(self):
+        with tempfile.TemporaryDirectory() as folder,patch.object(server,'notes_path',return_value=Path(folder)/'notes.json'),patch.object(server,'github_repo',return_value='org/repo'):
+            server.save_draft({'pr':877,'scope':'summary','text':'Keep me'})
+            real=server.write_api_cache;failed=False
+            def write(file,value):
+                nonlocal failed
+                if file==server.draft_path(877) and not failed:failed=True;raise OSError('Disk failed')
+                real(file,value)
+            with patch.object(server,'write_api_cache',side_effect=write):
+                with self.assertRaises(OSError):server.import_backup({'pr':877,'backup':self.backup(),'confirm':True})
+            self.assertEqual(server.read_draft(877)['summary']['text'],'Keep me')
+            self.assertEqual(server.read_notes(877),{})
+    def test_feedback_paginates_and_keeps_replies_outdated_locations_and_reviews(self):
+        calls=[]
+        def api(endpoint,force=False):
+            calls.append((endpoint,force));server.API_INFO.value={'cached':True,'fetchedAt':123}
+            if '/issues/' in endpoint:
+                return [{'id':n,'body':'Discussion','user':{'login':'alice'},'created_at':'2026-01-01'} for n in range(100)] if endpoint.endswith('&page=1') else [{'id':101,'body':'Last page'}]
+            if '/reviews?' in endpoint:return [{'id':201,'body':'','state':'APPROVED'},{'id':202,'body':'Private draft','state':'PENDING'}]
+            return [{'id':301,'body':'<script>unsafe()</script>','path':'doc/A.xml','original_line':12,'line':None,'side':'RIGHT','in_reply_to_id':300},
+                    {'id':302,'body':'File-level','path':'doc/A.xml','subject_type':'file','line':None}]
+        with patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'github_api',side_effect=api):
+            result=server.github_feedback(877,True)
+        self.assertEqual(len(result['items']),104)
+        self.assertEqual(len(calls),4)
+        self.assertTrue(all(force for endpoint,force in calls))
+        reply=next(i for i in result['items'] if i['id']=='301')
+        self.assertTrue(reply['outdated']);self.assertEqual(reply['replyTo'],300)
+        self.assertFalse(next(i for i in result['items'] if i['id']=='302')['outdated'])
+        self.assertEqual(result['warnings'],[])
+    def test_feedback_partial_failure_and_stale_cache_are_explicit(self):
+        def api(endpoint,force=False):
+            if '/reviews?' in endpoint:raise ValueError('Rate limited')
+            server.API_INFO.value={'stale':True,'cached':True,'fetchedAt':123,'warning':'Offline'}
+            return [{'id':1,'body':'Cached comment'}] if '/issues/' in endpoint else []
+        with patch.object(server,'github_repo',return_value='org/repo'),patch.object(server,'github_api',side_effect=api):result=server.github_feedback(877)
+        self.assertEqual(len(result['items']),1)
+        self.assertIn('Offline',result['warnings'])
+        self.assertTrue(any('Rate limited' in warning for warning in result['warnings']))
+
 if __name__=='__main__': unittest.main()

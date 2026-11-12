@@ -1,126 +1,92 @@
-# ONVIF Spec Review — V1
+# ONVIF Spec Review
 
-A local web viewer for reviewing ONVIF specification pull requests, including formatted DocBook, source files, and images. Requires **Python 3.9+ and Git**. No Python packages, build step, or Node installation is needed to run it.
+Review public pull requests as formatted, side-by-side documents. DocBook keeps headings, paragraphs, tables, parameter lists, and diagrams. Other text files use source diffs; raster images have before/after previews. Other binary files show metadata.
 
-## Start
+## Hosted viewer on GitHub Pages
 
-From your specs checkout:
+Open the published URL, choose a label/PR/file, and review. No checkout, Python, personal token, or application login is needed. GitHub Actions precomputes comparisons using trusted tool code; PR content is read as data and never executed. The site includes only public repository content, branch names, commit IDs, and generated comparison data. Build artifacts do not include local notes, reviewed marks, Git metadata, or credentials.
+
+The build timestamp and exact compared commits identify each snapshot. **Check for updates** reloads the latest published build; it does not fetch new Git history or start an Actions run. Existing GitHub feedback loads separately from the public API and can be refreshed without rebuilding comparisons. API rate limits and partial failures are shown, with cached results where available.
+
+Notes and reviewed marks are stored in **IndexedDB in the current browser**, keyed by repository and PR. They are not uploaded or shared. Clearing site data removes them; use Back up PR review regularly. Switching browsers or computers requires backup/import. Local-server notes remain in Git metadata and can be transferred using the same backup format.
+
+### Copy feedback to GitHub
+
+There are no direct submission buttons, OAuth login, or GitHub write API calls.
+
+1. Save your notes and choose **More → Preview review…**.
+2. **Copy entire review** copies Markdown with the PR summary, file notes, and only commented chunks, including quoted context and reviewed commits.
+3. **Open PR on GitHub** opens Files changed. Use your normal GitHub login, click Review changes, paste into the summary, choose the review type, and submit there. This creates one summary; Markdown sections do not become separate threads.
+4. For individual discussions, use each note's **Copy comment** and **Open GitHub location**. Add it as a file/line comment to a pending review, then submit on GitHub.
+5. **Export Markdown** downloads the same review if clipboard access is unavailable.
+
+Line links use the reviewed source location where it can be mapped reliably. Automatic numbering changes, binary/image changes, or other chunks without a changed source line link to the file, with the reason shown. If the PR has moved since the build, check its current diff before adding a comment. The tool never claims a copied review has been posted.
+
+## Local tool
+
+From a checkout of the specs repository:
 
 ```sh
 ./tools/xml-review/start.sh
 ```
 
-This finds the enclosing repository, starts a loopback-only server at http://127.0.0.1:8765, and opens your browser. Keep the terminal running; stop with Ctrl+C.
+Python 3.9 or newer is required. The standard library is sufficient. The command opens `http://127.0.0.1:8765`; keep the terminal running and use Ctrl+C to stop it. Options include `--no-open`, `--port 8766`, and `--repo /path/to/specs`.
 
-```sh
-./tools/xml-review/start.sh --port 8766
-./tools/xml-review/start.sh --no-open
-```
+Choose a same-repository PR; forks are excluded. Base/proposed versions are fixed to the PR's merge base and head, displayed with branch names and short SHAs. **Refresh from GitHub** fetches origin and refreshes PR metadata. Missing/shallow history may require `git fetch origin` or `git fetch --unshallow`.
 
-On Windows, run `py -3 tools/xml-review/server.py --open` (or use `python3`). To point at another checkout: `python3 tools/xml-review/server.py --repo /path/to/specs --open`.
+Public repositories can be read anonymously. For private repositories in local mode, or higher API limits, run `gh auth login` or set `GH_TOKEN`/`GITHUB_TOKEN`. Tokens stay server-side and are used for reads only. Metadata is cached in Git metadata for ten minutes, including rate-limit backoff and labelled stale results.
 
 ## Review workflow
 
-1. Choose a PR. The open PR list loads automatically from the repository's GitHub `origin`; same-repository source branches are supported, forks are excluded.
-2. Choose a changed file. The comparison loads automatically. Base is the common ancestor with the target branch; proposed is the PR head. Branch labels show short SHAs, with full SHAs on hover.
-3. First/Previous/Next/Last navigate without marking anything. **Reviewed & Next** marks the selected change and advances after saving succeeds. Checking Reviewed or saving a nonempty note does the same.
-4. Changes only and Hide reviewed narrow the view. Disable Hide reviewed to revisit or uncheck reviewed changes.
-5. The toolbar shows both document progress and **PR-wide progress across every changed file**, including files you have not opened. The file dropdown shows individual counts. Failed renders are reported as incomplete, never as fully reviewed.
-6. **More → Export PR notes** downloads the PR summary, file notes, and only commented changes in the current PR comparison, with PR details, branch names/SHAs, section, before/after context, and the note. Uncommented changes and files without notes are omitted.
+- A label filter narrows the PR list without additional GitHub requests. Each file and the toolbar show review progress across all changed files.
+- Opening a PR resumes at the first unreviewed change across its files. **More → Resume review** returns there. Failed renders keep the PR incomplete.
+- First, Previous, Next, and Last navigate only. **Reviewed & Next** saves the mark before advancing. Checking Reviewed or saving a nonempty change note also advances. Unchecking Reviewed lets you revisit a change.
+- Changes only and Hide reviewed filter the view. Home returns to PR/file selection. Navigation controls stay visible while scrolling.
+- **PR summary…**, **File note…**, and change notes serve different levels of feedback. A file note does not mark every change in that file reviewed. Draft warnings protect unfinished edits.
+- Whole-file completion offers a link to the next unreviewed change. When all changes are reviewed, a banner says so. These local marks are not GitHub approvals.
+- **GitHub feedback…** shows comments for the selected file, PR discussion, and submitted review summaries. Text is displayed safely as Markdown source. Author, time, replies, line location, and outdated locations are shown where supplied. Replying/resolving happens on GitHub.
 
-The last PR, document, filters, and selected change are remembered in browser storage for this checkout. Reopening a URL with an explicit PR takes precedence over the remembered PR.
+Local-server notes live in Git metadata, for example `xml-review-notes-pr-877.json`, `xml-review-draft-pr-877.json`, and `xml-review-reviewed-pr-877.json`. Change notes retain their exact comparison and context; older comparisons remain under Saved notes. Identical content can retain Reviewed marks across revisions. New or changed content needs review. None of these files is committed.
 
-## Notes and reviewed marks
+## Backup, reset, and exports
 
-Notes are automatically saved under the PR number in Git metadata, for example `.git/xml-review-notes-pr-877.json` (the precise location follows `git rev-parse --git-path`). Switching PRs loads that PR's notes. Notes are tied to the exact document comparison; **More → Saved notes** keeps older revisions under the same PR, with their original quoted context and an export option. Unassigned legacy notes are not supported.
+**More → Back up PR review** downloads JSON containing the selected PR's summary, file notes, change notes from all saved comparisons, and reviewed marks. **Import PR backup…** validates the repository, PR, schema, and size (10 MB maximum), shows counts, then asks before replacing that PR's data. Other PRs are unchanged. Import replaces rather than merges conflicting edits.
 
-Use Add note and Save note. Reviewed and Add note share a line. Once reviewed, Add note is hidden; existing notes remain visible and editable. Deleting a note does not uncheck Reviewed. A draft warning lets you stay or discard before switching PR/document or refreshing. Closing/reloading the browser warns about unfinished notes. Failed saves stay visible; automatic advancement occurs only after a successful save.
+**Reset review…** clears that PR's local notes and marks, including older comparisons. **Undo last reset / import…** restores the previous snapshot; only the latest undo is retained. Browser data can be imported into the local tool and vice versa. Backups do not contain credentials, Git history, browser preferences, or existing GitHub comments.
 
-Reviewed marks are saved per PR in Git metadata, for example `xml-review-reviewed-pr-877.json`. They carry forward only for identical rendered before/after content in the same document and section. Repeated identical changes are distinguished by occurrence; reorganizing duplicates may need manual rechecking. These are local reviewed marks, not GitHub approvals. Draft notes remain local until you explicitly submit a review. Reviewed marks are never sent as GitHub approvals; none of these local files are committed.
+**Export PR notes** and Saved notes export commented content as Markdown. **Export PDF** opens a print-ready snapshot of the complete selected file, irrespective of filters, with notes, commits, highlighting, and repeated version headings. Use Print / Save as PDF in the browser's print dialog. Browser pagination determines page breaks.
 
-## Refresh from GitHub
+## Build and publish the static site
 
-The single refresh button runs `git fetch --no-tags origin`, reloads PR metadata, and updates the selected PR. It never checks out, merges, or edits specification files. Startup loads PR metadata but does not fetch automatically.
-
-After refreshing, the viewer reports new changes, reviewed changes retained, changes needing another look, and earlier changes replaced or removed. Matching revised changes to previously reviewed changes uses document/section context, so the recheck count is conservative; only exact content matches retain reviewed marks. Earlier notes stay under their PR's Saved notes. A successful refresh displays its completion time.
-
-Public GitHub repositories work without authentication. For private repositories or higher API limits, install GitHub CLI and run `gh auth login`, or supply `GH_TOKEN`/`GITHUB_TOKEN` in the environment. Tokens stay server-side. Fetching uses Git's configured repository credentials. Authentication failures suggest running `git fetch origin` in your terminal. A shallow clone may need `git fetch --unshallow`.
-
-## Rendering limits
-
-This is a focused DocBook renderer, not the repository's PDF publishing pipeline. It renders headings, paragraphs, lists, tables, cross-reference titles, and code. Prose indentation/reflow is ignored; code whitespace is preserved. Embedded raster/SVG diagrams are loaded from the matching Git revision. Definition/parameter lists, CALS horizontal and vertical spans (including named spans), and column-width proportions are rendered. Unavailable or unsupported image formats remain labelled placeholders. XInclude/DTD/entity expansion is unsupported. Unsupported XML is reported explicitly. Alignment is heuristic; moves can appear as deletion/addition. Formatting-only edits can flag a block without word highlights.
-
-## Verification
-
-From the repository root:
+For a local trial build of a public repository:
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/xml-review -v
+python3 tools/xml-review/build_site.py --repo . --fetch --output /tmp/spec-review-site
+python3 -m http.server 8766 --directory /tmp/spec-review-site
 ```
 
-Optional developer-only JavaScript checks (Node required for these, not to run the tool):
+Then open `http://127.0.0.1:8766`. The output directory must be empty. Add `--pr 877` to build just one PR. The exporter verifies the repository is public, reads open same-repository PRs, and generates content-addressed JSON and deduplicated assets. It does not write notes. Exported SVGs have active content and external references removed. A CSP restricts scripts to the site itself. Existing local note/review identities are retained in exported comparisons.
+
+The workflow `.github/workflows/spec-review-pages.yml` builds on changes pushed to `AI/spec-review` or `development`, and can run manually. Its hourly schedule takes effect once the workflow is on the default branch. It checks out trusted branch code, reads PR files via Git, and uploads a downloadable `spec-review-static-preview` artifact. A failed build preserves the existing deployment. Preview artifacts have a three-day retention; Pages artifacts have a one-day retention.
+
+Publishing is deliberately a separate manual action:
+
+1. In the repository's Settings → Pages, choose GitHub Actions as the source.
+2. This repository already publishes its root documentation from `development`. The workflow builds that documentation using the official Pages Jekyll builder, then adds the viewer under `/review/`. Check both parts in the downloadable preview before switching the Pages source.
+3. Run Publish ONVIF Spec Review on the trusted branch with **publish** enabled. The viewer will be at `https://onvif.github.io/specs/review/`. The `github-pages` environment may require approval or branch permissions configured by a repository administrator.
+
+The build job has only content/PR read permission. Only the deploy job has `pages: write` and `id-token: write`. The exporter stops above a 900 MB viewer budget; the workflow checks that documentation plus viewer stay below 950 MB. Use standard hosted Linux runners; paid larger runners are unnecessary for this workload. Automatic comparison builds do not publish by default. After merging into `development` and enabling Pages, set the repository Actions variable `SPEC_REVIEW_PAGES_PUBLISH` to `true` to publish scheduled and push builds on that branch automatically. Branch trial builds stay unpublished unless manually requested.
+
+## Rendering and tests
+
+DocBook supports nested variable lists, CALS spans/rowspans and column widths, and embedded diagrams relative to each Git revision. Source changes are split into blocks of up to 35 lines. Deleted files remain reviewable. Mermaid and standalone SVG use source diffs. Footnotes use basic inline rendering.
+
+From `tools/xml-review`:
 
 ```sh
-node --check tools/xml-review/app.js
-node tools/xml-review/test_frontend.cjs
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest -q
+node test_frontend.cjs
+node test_static_frontend.cjs
 ```
 
-Tests cover alignment, escaping, whitespace, local persistence, PR note isolation, fetch behaviour/failures, PR-wide summaries and render failures, revision carry-forward, refresh classification, and full PR exports. The launcher was also checked from a fresh temporary Git checkout with no extra packages.
-
-The sticky toolbar uses two compact rows at normal desktop widths: navigation/review actions above filters and progress. **More** contains change counts, saved notes, exports, and the highlight legend.
-
-## GitHub caching and rate limits
-
-PR metadata is cached locally in Git metadata (`xml-review-github-cache.json`) for ten minutes and survives server restarts. Loading a PR list also caches each PR's details, so selecting one normally requires no additional GitHub call. **Refresh from GitHub** bypasses the freshness interval and requests current metadata. Conditional requests reuse GitHub's ETags where available.
-
-When GitHub returns a rate limit, the viewer shows its reset time in the browser's local time. It stops making requests for that authentication identity until the reset or retry-after time. Existing cached metadata remains usable and is explicitly labelled as cached/stale, so local comparisons, notes, and exports remain available. Without cached metadata, it displays the wait time instead of pretending a PR is current. Other permission-related 403 errors are distinguished from rate limits.
-
-Unauthenticated GitHub REST access normally allows 60 requests/hour per public IP. Signing in with `gh auth login` or setting `GH_TOKEN` typically raises that to 5,000/hour. The cache separates authentication identities and never stores tokens. GitHub CLI authentication is reused for HTTP requests; an API error is not silently retried as an unauthenticated request.
-
-## Export PDF
-
-Choose **More → Export PDF** to open a print-ready snapshot of the **selected document**. Click **Print / Save as PDF**, then choose the browser/system PDF destination (on macOS, PDF → Save as PDF). The default print stylesheet uses A4 landscape with side-by-side versions, repeated version headers, change highlighting, commit metadata, and saved notes. Save/cancel drafts first.
-
-The entire selected document is included, regardless of Changes only or Hide reviewed. This is separate from Export PR notes, which exports Markdown for the PR summary, file notes, and commented changes. Print controls are omitted from paper/PDF. Use Back to review to return to the review cursor. The print snapshot stays only in this tab's session storage, and requires no new GitHub calls or PDF library installation. Pagination follows the browser's print engine; the system print dialog lets the user change paper size or scaling.
-
-
-## Label filter and Reset review
-
-The **Label** dropdown filters open PRs using GitHub labels such as `WG_ai`. **All labels** shows the complete list. Filtering uses cached PR metadata without additional GitHub requests, and the selected filter is remembered. An explicit PR link takes precedence if the saved filter would hide it.
-
-**More → Reset review…** clears the PR summary, file notes, and all change notes (including saved older revisions) and Reviewed marks for the selected PR, across all its files. A confirmation identifies the PR before anything changes. Other PRs are unaffected. **Undo last reset…** restores the most recent pre-reset snapshot for that PR; it also confirms before replacing notes or marks added after the reset. Only the latest reset backup is retained, locally in Git metadata.
-
-
-## Review all changed files
-
-The **File** selector includes every file in the PR, not just XML. PR-wide progress counts all changed files.
-
-- DocBook books keep the formatted headings, paragraphs, and tables. Their existing note/review identities are preserved.
-- YAML, HTML, Mermaid (`.mmd`), and other UTF-8 text use escaped side-by-side source diffs with line ranges and word highlights. Whitespace is preserved. Long changes are split into blocks of up to 35 lines so they can be reviewed in sections.
-- Added and deleted files are labelled in the selector. Deleted content is visible on the base side and remains reviewable.
-- PNG, JPEG, GIF, and WebP images show before/after previews. Click an image to open it at full size. Image Reviewed marks match content hashes, not the preview URL.
-- Other binary formats show size and SHA256 metadata as one reviewable change. SVG is treated as source, not executed as an inline image. Mermaid currently shows source rather than a generated diagram.
-
-All these views use the same notes, Reviewed controls, PR progress, reset, commented-only notes export, and PDF print view. Source review identities ignore line-number shifts when the before/after content is otherwise identical.
-
-
-## Rich DocBook rendering
-
-Parameters and request/response definitions render as nested term/description lists. Tables support `namest`/`nameend`, `spanname`/`spanspec`, `morerows`, explicit column numbers, and proportional/physical column widths.
-
-Embedded PNG, JPEG, GIF, WebP, and SVG diagrams resolve relative to the document at the base/proposed commit. Content-addressed asset URLs avoid false changes when only a commit SHA changes, while an actual diagram edit is detected. Click a diagram to inspect it at full size. SVG responses use a sandboxed content policy that blocks scripts and external resource loads. External image URLs and paths outside the repository are not loaded.
-
-The richer layout is also used in PDF print views. Existing note identities are retained for unchanged parameter-list/table content; visual-only span changes and diagram-content changes are reviewable. Footnotes still use basic inline rendering.
-
-
-## PR summaries, file notes, and GitHub reviews
-
-Use **More → PR summary…** for overall feedback, and **More → File note…** for feedback about the selected file. These save locally by PR number in Git metadata (`xml-review-draft-pr-N.json`) and reload when switching PRs. File notes follow their path across PR revisions; saving one does not mark its changes reviewed. Change notes retain their exact comparison and quoted context. Saved notes and Markdown exports include all three levels. The selected-file PDF also includes the PR summary and that file's note.
-
-**More → Preview review…** shows the saved PR summary and one grouped comment per noted file, containing its file note and only commented change blocks with before/after context. Export preview downloads this as Markdown. Unsaved edits must be saved or discarded first.
-
-To post, sign in with `gh auth login` or provide `GH_TOKEN`/`GITHUB_TOKEN` with permission to write pull-request reviews for the repository. Tokens remain server-side. In the preview, explicitly check the posting confirmation and click **Submit comment review to GitHub**. The tool creates a pending review, adds file-level threads, then submits it as a **Comment** review. It does not submit Approve or Request changes. Local Reviewed marks stay separate. No comments are posted just by saving notes or opening a preview.
-
-Submission checks the live PR is open and still has the reviewed head and merge base. Changed notes invalidate an earlier preview. Identical successful submissions are recorded locally to prevent repeats. If a network/API error leaves the outcome uncertain, the tool blocks automatic retries and links to the PR: inspect any pending or submitted review on GitHub before continuing. Submission records live in `xml-review-submissions-pr-N.json`; resetting local notes does not delete a GitHub review.
-
-GitHub submission is covered by mocked API tests. A live review is not posted as part of development testing.
+Tests cover comparison alignment, content identities, notes/review persistence, reset/import rollback, backup validation, source locations, read-only GitHub feedback, copy/paste exports, and static publication without private local review data. No real GitHub comments are posted by tests.

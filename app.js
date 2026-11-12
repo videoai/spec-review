@@ -1,17 +1,19 @@
 const $ = id => document.getElementById(id);
+let feedback=null,feedbackLoading=false,feedbackRequest=0,pendingImport=null;
 let prCatalog=[],selectedLabel='';
-let reviewDraft={summary:{},files:{}},preparedReview=null,submittingReview=false;
+let reviewDraft={summary:{},files:{}},preparedReview=null;
 let activePr = null, overview = null, reviewId = '', reviewPath = '', notes = {}, noteRows = [];
 let changes = [], current = -1, busy = false, saving = 0, storageKey = '', remembered = {}, historyNotes = {};
 const toolbarObserver=new ResizeObserver(() => {const toolbar=document.querySelector('.toolbar');if(toolbar)document.documentElement.style.setProperty('--toolbar-height',toolbar.getBoundingClientRect().height+'px');});toolbarObserver.observe(document.querySelector('.toolbar'));
 
 async function api(url, payload) {
+  if(window.reviewBackend)return window.reviewBackend(url,payload);
   const response = await fetch(url, payload === undefined ? {} : {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
   const result = await response.json();
   if (!response.ok) throw Error(githubMessage(result.error || 'Request failed',result.retryAt));
   return result;
 }
-function githubMessage(message,retryAt){if(!retryAt)return message;const minutes=Math.max(0,Math.ceil((retryAt*1000-Date.now())/60000));return `GitHub rate limit reached. Retry after ${new Date(retryAt*1000).toLocaleString()} (about ${minutes} min). Sign in with gh auth login for a higher limit.`;}
+function githubMessage(message,retryAt){if(!retryAt)return message;const minutes=Math.max(0,Math.ceil((retryAt*1000-Date.now())/60000));return `GitHub rate limit reached. Retry after ${new Date(retryAt*1000).toLocaleString()} (about ${minutes} min).`;}
 function githubNotice(meta){if(!meta)return;if(meta.stale){$('githubStatus').textContent='Using cached GitHub data. '+githubMessage(meta.warning||'GitHub is unavailable.',meta.retryAt);}else if(!$('githubStatus').textContent.startsWith('Using cached GitHub data.')){$('githubStatus').textContent=meta.cached?'Cached GitHub data · '+new Date(meta.fetchedAt*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';}}
 function plain(markup) { const div=document.createElement('div'); div.innerHTML=markup; return div.textContent.trim(); }
 function readStored() { try { return JSON.parse(localStorage.getItem(storageKey)||'{}'); } catch { return {}; } }
@@ -29,9 +31,10 @@ async function mayLeave() {
 window.addEventListener('beforeunload',event=>{if(dirty()||saving){event.preventDefault();event.returnValue='';}});
 function controls() {
   $('pr').disabled=busy||saving>0;
+  $('refreshFeedback').disabled=feedbackLoading||busy||saving>0||!activePr;
   $('prLabel').disabled=busy||saving>0;
   $('resetReview').disabled=busy||saving>0||!activePr;
-  for(const id of ['prSummary','previewReview'])$(id).disabled=busy||saving>0||!activePr;
+  for(const id of ['prSummary','previewReview','backupReview','importReview','resumeReview','showFeedback'])$(id).disabled=busy||saving>0||!activePr;
   $('noteHistory').disabled=busy||saving>0||!activePr;
   $('fileNote').disabled=busy||saving>0||!activePr||!reviewPath;
   $('undoReset').hidden=!activePr?.canUndo;
@@ -47,12 +50,29 @@ function updateSummaryRow(row) {
   if(found){found.reviewed=row.reviewed;found.note=notes[row.id]||null;}
   progress();
 }
+function firstUnreviewed(summary) {
+  for(const doc of summary?.documents||[]){if(doc.error)continue;const row=doc.changes.find(row=>!row.reviewed);if(row)return {path:doc.path,key:row.reviewKey};}
+  return null;
+}
+function completionText(summary,path) {
+  if(!summary)return '';
+  const docs=summary.documents,errors=docs.some(doc=>doc.error);
+  if(!firstUnreviewed(summary))return errors?'Review incomplete — some files could not be rendered.':'All changes reviewed in this PR.';
+  const doc=docs.find(doc=>doc.path===path);
+  return doc&&!doc.error&&doc.changes.every(row=>row.reviewed)?'This file is reviewed. Continue with the next unreviewed change.':'';
+}
+async function resumeReview(){
+  const target=firstUnreviewed(overview);if(!target){progress();return;}
+  if(target.path!==reviewPath)await compare(target.path,target.key);
+  else{filter(false);const index=changes.findIndex(el=>el.dataset.key===target.key);if(index>=0)jump(index,false);}
+}
 function progress() {
   $('noteCount').textContent=Object.keys(notes).length+' change notes'+(reviewDraft.files?.[reviewPath]?.text?' · file note':'')+(reviewDraft.summary?.text?' · PR summary':'');
   $('prSummary').textContent=reviewDraft.summary?.text?'Edit PR summary…':'PR summary…';
   const all=overview?.documents.flatMap(doc=>doc.changes)||[], errors=overview?.documents.filter(doc=>doc.error)||[];
   const complete=overview?.documents.filter(doc=>!doc.error&&doc.changes.every(change=>change.reviewed)).length||0;
   $('prProgress').textContent=overview?`PR: ${all.filter(row=>row.reviewed).length}/${all.length} reviewed · ${complete}/${overview.documents.length} files${errors.length?' · incomplete':''}`:'';
+  const banner=$('completionBanner'),message=completionText(overview,reviewPath);banner.replaceChildren();banner.hidden=!message;if(message){banner.append(document.createTextNode(message));if(firstUnreviewed(overview)){const button=document.createElement('button');button.textContent='Resume review';button.onclick=()=>$('resumeReview').click();banner.append(button);}}
   for(const option of $('prDoc').options){const doc=overview?.documents.find(doc=>doc.path===option.value);if(doc)option.textContent=(doc.fileStatus==='deleted'?'Deleted · ':doc.fileStatus==='added'?'Added · ':'')+doc.path+(doc.error?' · could not render':` · ${doc.changes.filter(c=>c.reviewed).length}/${doc.changes.length}`);}
 }
 function filter(persist=true) {
@@ -63,7 +83,7 @@ function filter(persist=true) {
   for(const id of ['first','prev','next','last'])$(id).disabled=!changes.length;
   const total=noteRows.filter(row=>row.status!=='same');
   $('reviewProgress').textContent=activePr?`File: ${total.filter(row=>row.reviewed).length}/${total.length}`:'';
-  $('status').textContent=total.length&&total.every(row=>row.reviewed)?'Complete':current>=0?`${current+1} / ${changes.length}`:'';
+  $('status').textContent=total.length&&total.every(row=>row.reviewed)?(firstUnreviewed(overview)?'File reviewed':overview?.documents.some(doc=>doc.error)?'Incomplete':'All reviewed'):current>=0?`${current+1} / ${changes.length}`:'';
   progress();controls();if(persist)remember();
 }
 function jump(index, smooth=true) {
@@ -76,7 +96,7 @@ function move(step) { if(changes.length)jump(current<0?(step<0?changes.length-1:
 function advance(el) {
   const all=[...document.querySelectorAll('.row:not(.same)')],index=all.indexOf(el);
   const next=[...all.slice(index+1),...all.slice(0,index)].find(row=>!row.classList.contains('reviewed')&&!row.classList.contains('hidden'));
-  if(next)jump(changes.indexOf(next));else $('status').textContent='Complete';
+  if(next)jump(changes.indexOf(next));else $('status').textContent=firstUnreviewed(overview)?'File reviewed':overview?.documents.some(doc=>doc.error)?'Incomplete':'All reviewed';
 }
 async function mark(row,el,value) {
   await api('/api/reviewed',{pr:activePr.number,key:row.reviewKey,reviewed:value});row.reviewed=value;
@@ -122,23 +142,27 @@ async function compare(path,restoreKey=null){
   const fragment=document.createDocumentFragment(),counts={changed:0,added:0,removed:0};
   for(const row of noteRows){const el=document.createElement('div');el.className='row '+row.status;el.classList.toggle('reviewed',row.reviewed);el.dataset.status=row.status;el.dataset.key=row.reviewKey||row.id;for(const side of ['left','right']){const cell=document.createElement('div');cell.className='cell';cell.innerHTML=row[side];el.append(cell);}if(row.status!=='same'||notes[row.id])attachActions(el,row);fragment.append(el);if(row.status!=='same')counts[row.status]++;}
   renderFileNote();$('rows').className='file-mode-'+data.mode;$('rows').replaceChildren(fragment);changes=[];current=-1;labels();$('summary').textContent=`${data.fileStatus==='deleted'?'Deleted file · ':data.fileStatus==='added'?'Added file · ':''}${data.mode==='image'?'Image comparison':data.mode==='binary'?'Binary comparison':counts.changed+counts.added+counts.removed?`${counts.changed} modified · ${counts.added} added · ${counts.removed} removed`:'No content differences'}`;filter(false);history.replaceState(null,'','?'+params);
-  const index=changes.findIndex(el=>el.dataset.key===restoreKey);if(index>=0)jump(index,false);else if(restoreKey&&changes.length)jump(0,false);else remember();
+  const index=changes.findIndex(el=>el.dataset.key===restoreKey);if(index>=0)jump(index,false);else{const pending=changes.findIndex(el=>!el.classList.contains('reviewed'));if(pending>=0)jump(pending,false);else remember();}renderFeedback();
 }
-function clearReview(persist=false){reviewDraft={summary:{},files:{}};$('fileNoteBanner').replaceChildren();$('fileNoteBanner').hidden=true;activePr=null;overview=null;reviewId='';reviewPath='';notes={};noteRows=[];changes=[];current=-1;$('pr').value='';$('prDoc').replaceChildren(new Option('Select a pull request first',''));$('leftTitle').textContent='Base';$('rightTitle').textContent='Proposed';$('rows').replaceChildren();$('summary').textContent='Select a pull request to begin';$('error').textContent='';filter(false);controls();if(persist){history.replaceState(null,'',location.pathname);remember();}}
+function clearReview(persist=false){feedback=null;feedbackLoading=false;feedbackRequest++;$('githubFeedback').hidden=true;reviewDraft={summary:{},files:{}};$('fileNoteBanner').replaceChildren();$('fileNoteBanner').hidden=true;activePr=null;overview=null;reviewId='';reviewPath='';notes={};noteRows=[];changes=[];current=-1;$('pr').value='';$('prDoc').replaceChildren(new Option('Select a pull request first',''));$('leftTitle').textContent='Base';$('rightTitle').textContent='Proposed';$('rows').replaceChildren();$('summary').textContent='Select a pull request to begin';$('error').textContent='';filter(false);controls();if(persist){history.replaceState(null,'',location.pathname);remember();}}
 function labelMatches(pr,label){return !label||(pr.labels||[]).includes(label);}
 function renderPrList(){const selected=activePr?.number||$('pr').value;const filtered=prCatalog.filter(pr=>labelMatches(pr,selectedLabel));$('pr').replaceChildren(new Option(filtered.length?'Choose an open pull request…':'No PRs with this label',''));for(const pr of filtered)$('pr').add(new Option(`#${pr.number} · ${pr.title}`,pr.number));if(filtered.some(pr=>String(pr.number)===String(selected)))$('pr').value=selected;$('prInfo').textContent=`${filtered.length} of ${prCatalog.length} open PRs${selectedLabel?' · '+selectedLabel:''}`;}
 async function loadPullRequests(force=false){if(force)$('githubStatus').textContent='';const data=await api('/api/prs'+(force?'?refresh=1':''));githubNotice(data.github);prCatalog=data.prs;const labels=[...new Set(prCatalog.flatMap(pr=>pr.labels||[]))].sort((a,b)=>a.localeCompare(b));$('prLabel').replaceChildren(new Option('All labels',''));for(const label of labels)$('prLabel').add(new Option(label,label));if(selectedLabel&&!labels.includes(selectedLabel))selectedLabel='';$('prLabel').value=selectedLabel;renderPrList();}
 $('prLabel').onchange=async()=>{const label=$('prLabel').value;const hidesCurrent=activePr&&!labelMatches(prCatalog.find(pr=>pr.number===activePr.number)||{},label);if(hidesCurrent&&!await mayLeave()){$('prLabel').value=selectedLabel;return;}selectedLabel=label;if(hidesCurrent)clearReview(true);renderPrList();remember();};
 async function selectPr(number,path='',restoreKey=null,force=false){
   if(!number){clearReview(true);return;}
+  feedback=null;feedbackRequest++;feedbackLoading=false;$('githubFeedback').hidden=true;
   // Clear old content immediately so a failed load cannot be mistaken for the chosen PR.
   $('rows').replaceChildren();$('error').textContent='';$('prInfo').textContent='Loading PR #'+number+'…';overview=null;activePr=null;notes={};noteRows=[];changes=[];current=-1;$('summary').textContent='Loading PR #'+number+'…';filter(false);controls();
   activePr=await api('/api/pr?number='+encodeURIComponent(number)+(force?'&refresh=1':''));activePr.canUndo=(await api('/api/reset-status?pr='+activePr.number)).canUndo;reviewDraft=await api('/api/draft?pr='+activePr.number);githubNotice(activePr.github);labels();
   overview=await api('/api/review-summary?'+new URLSearchParams({pr:activePr.number,left:activePr.left,right:activePr.right}));
   $('prInfo').textContent=`#${activePr.number} · ${activePr.files.length} changed files`;
   $('prDoc').replaceChildren();for(const file of activePr.files)$('prDoc').add(new Option(file,file));
-  if(activePr.files.length)await compare(activePr.files.includes(path)?path:activePr.files[0],restoreKey);
+  const target=restoreKey?null:firstUnreviewed(overview);
+  if(activePr.files.length)await compare(target?.path||(activePr.files.includes(path)?path:activePr.files[0]),target?.key||restoreKey);
   else{reviewPath='';notes={};noteRows=[];changes=[];current=-1;$('prDoc').add(new Option('No changed files',''));$('summary').textContent='This PR has no changed files';filter();}
+  if(!firstUnreviewed(overview))$('completionBanner').scrollIntoView({block:'start',behavior:'instant'});
+  loadFeedback();
   const errors=overview.documents.filter(doc=>doc.error);if(errors.length)$('error').textContent=`Could not render ${errors.length} file(s); PR review is incomplete. See the file selector or export for details.`;
 }
 $('pr').onchange=async()=>{
@@ -158,12 +182,12 @@ function updateMessage(before,after){
   return `${incoming.length-recheck} new · ${after.filter(row=>row.reviewed).length} reviewed retained · ${recheck} need another look · ${removed.length} earlier changes replaced or removed`;
 }
 $('fetchLatest').onclick=async()=>{
-  if(!await mayLeave())return;const number=activePr?.number||'',path=reviewPath,block=changes[current]?.dataset.key,prior=snapshot();busy=true;controls();$('fetchInfo').textContent='Fetching origin…';
+  if(!await mayLeave())return;const number=activePr?.number||'',path=reviewPath,block=changes[current]?.dataset.key,prior=snapshot();busy=true;controls();$('fetchInfo').textContent=window.REVIEW_STATIC?'Checking published comparisons…':'Fetching origin…';
   try{await api('/api/fetch',{});await loadPullRequests(true);if(number&&[...$('pr').options].some(option=>option.value===String(number))){$('pr').value=number;await selectPr(number,path,block);$('fetchInfo').textContent=(activePr.github?.stale?'Showing cached comparison. ':'')+updateMessage(prior,snapshot());}else{clearReview(true);$('fetchInfo').textContent=number?'Fetched latest. The selected PR is no longer open.':'Fetched latest. Choose a PR to begin.';}
-    if(activePr?.github?.stale)throw Error('Git fetch succeeded, but GitHub metadata is still cached. '+githubMessage(activePr.github.warning,activePr.github.retryAt));remembered.lastRefresh=new Date().toISOString();$('lastRefresh').textContent='Last refreshed: '+new Date(remembered.lastRefresh).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});remember();
+    if(!window.REVIEW_STATIC&&activePr?.github?.stale)throw Error('Git fetch succeeded, but GitHub metadata is still cached. '+githubMessage(activePr.github.warning,activePr.github.retryAt));remembered.lastRefresh=new Date().toISOString();$('lastRefresh').textContent=window.REVIEW_STATIC?'Comparisons built: '+new Date((await api('/api/context')).builtAt).toLocaleString():'Last refreshed: '+new Date(remembered.lastRefresh).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});if(window.REVIEW_STATIC)$('fetchInfo').textContent+=' · Published snapshots; PR updates appear after the next build.';remember();
   }catch(e){$('fetchInfo').textContent='Refresh incomplete: '+e.message;}finally{busy=false;controls();}
 };
-function download(text,name){const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:'text/markdown'}));link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
+function download(text,name,mime='text/markdown'){const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:mime}));link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
 function exportReview(){
   const commented=overview.documents.map(doc=>({...doc,changes:doc.changes.filter(row=>row.note?.text?.trim())})).filter(doc=>doc.changes.length||reviewDraft.files?.[doc.path]?.text?.trim());
   const count=commented.reduce((total,doc)=>total+doc.changes.length,0);
@@ -181,7 +205,7 @@ function pdfHtml(pr,path,rows,savedNotes,draft={}){
   const blocks=rows.map(row=>{const note=savedNotes[row.id];return `<tbody class="comparison-block ${esc(row.status)}"><tr><td>${row.left?.replace(/loading="lazy"/g,'loading="eager"')||'<span class="absent">—</span>'}</td><td>${row.right?.replace(/loading="lazy"/g,'loading="eager"')||'<span class="absent">—</span>'}</td></tr>${note?`<tr><td colspan="2" class="saved-note"><strong>Review note</strong><div>${esc(note.text)}</div></td></tr>`:''}</tbody>`;}).join('');
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title><style>
   @page{size:A4 landscape;margin:13mm 12mm}*{box-sizing:border-box}body{margin:24px;color:#24352f;font:11pt/1.5 Georgia,serif;background:white}.print-controls{display:flex;gap:16px;align-items:center;margin:0 0 24px;font:14px system-ui}.print-controls button{padding:10px 16px;background:#22644b;color:white;border:0;border-radius:5px;cursor:pointer}.print-controls p{margin:0;color:#617269}.report-title{font:600 22pt/1.2 system-ui;margin:0 0 8px}.report-meta{font:10pt/1.5 system-ui;overflow-wrap:anywhere;margin:0 0 18px}.report-meta p{margin:4px 0}table.comparison{border-collapse:collapse;table-layout:fixed;width:100%}.comparison>thead{display:table-header-group}.comparison>thead>tr>th{width:50%;text-align:left;padding:8px 12px;background:#eaf0eb;border:1px solid #ccd8ce;font:600 10pt/1.5 system-ui;overflow-wrap:anywhere}.comparison-block{break-inside:avoid;page-break-inside:avoid}.comparison-block>tr>td{width:50%;vertical-align:top;padding:5px 12px;border-left:1px solid #d9e1dc;border-right:1px solid #d9e1dc;overflow-wrap:anywhere}.comparison-block.changed>tr>td{border-left:2px solid #d5ad55}.comparison-block.added>tr>td:last-child{background:#f0faf2}.comparison-block.removed>tr>td:first-child{background:#fff5f1}.comparison-block>tr>td.saved-note{background:#f2f6f1;border:1px solid #ccd8ce;font:10pt/1.5 system-ui;padding:8px 12px}.saved-note div{white-space:pre-wrap}h1,h2,h3,h4,h5{font-family:system-ui;line-height:1.3;color:#1c4738;break-after:avoid;margin:14px 0 8px}h1{font-size:20pt}h2{font-size:17pt}h3{font-size:14pt}h4,h5{font-size:12pt}p{margin:5px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f1f4f2;padding:8px;font:8pt/1.45 monospace}code{font:8pt monospace;background:#f0f3f0}.image-comparison{margin:8px 0}.image-comparison img{display:block;max-width:100%;height:auto;max-height:160mm;object-fit:contain}.image-comparison figcaption{font:8pt/1.5 system-ui;overflow-wrap:anywhere}.binary-info{font:10pt/1.6 system-ui;overflow-wrap:anywhere}.docbook-variablelist dt{font-weight:bold;margin:8px 0 3px}.docbook-variablelist dd{margin:0 0 10px 14px;padding-left:8px;border-left:2px solid #dce7df}.docbook-table th{border:1px solid #ccd8ce;padding:5px;text-align:left}.docbook-table caption{text-align:left;font-weight:bold}.docbook-image{max-width:100%;height:auto;max-height:145mm;object-fit:contain}.docbook-image.inline-image{max-height:1.5em;vertical-align:middle}.docbook-figure{margin:10px 0}.docbook-figure figcaption{font:9pt system-ui}td table{table-layout:fixed;border-collapse:collapse;width:100%;font-size:9pt}td table td{border:1px solid #ccd8ce;padding:5px;vertical-align:top;overflow-wrap:anywhere}td table thead{background:#eaf0eb;font-weight:bold}del{background:#ffd6ce;color:#8c3025;text-decoration:line-through}ins{background:#c6ebce;color:#17592b;text-decoration:underline}.absent{color:#8a978f}.xref,a{color:#286951}.image-note{color:#728176;font-style:italic}ul,ol{padding-left:20px}thead,td,ins,del{-webkit-print-color-adjust:exact;print-color-adjust:exact}@media print{body{margin:0;font-size:9pt}.print-controls{display:none}a{color:inherit;text-decoration:none}.report-title{font-size:17pt}}
-  </style></head><body><div class="print-controls"><button onclick="window.print()">Print / Save as PDF</button><button onclick="history.back()">Back to review</button><p>Choose Save as PDF in the print dialog. Landscape layout · full selected file · saved notes included.</p></div><h1 class="report-title">PR #${esc(pr.number)}: ${esc(pr.title)}</h1><div class="report-meta"><p><strong>File:</strong> ${esc(path)}</p><p><strong>Base commit:</strong> ${esc(pr.left)}<br><strong>Proposed commit:</strong> ${esc(pr.right)}</p><p>Red strike-through = removed. Green underline = added. All content is included regardless of the review filters.</p></div>${extraNotes}<table class="comparison"><thead><tr><th>${esc(base)}</th><th>${esc(head)}</th></tr></thead>${blocks}</table></body></html>`;
+  </style></head><body><div class="print-controls"><button id="printNow">Print / Save as PDF</button><button id="printBack">Back to review</button><p>Choose Save as PDF in the print dialog. Landscape layout · full selected file · saved notes included.</p></div><h1 class="report-title">PR #${esc(pr.number)}: ${esc(pr.title)}</h1><div class="report-meta"><p><strong>File:</strong> ${esc(path)}</p><p><strong>Base commit:</strong> ${esc(pr.left)}<br><strong>Proposed commit:</strong> ${esc(pr.right)}</p><p>Red strike-through = removed. Green underline = added. All content is included regardless of the review filters.</p></div>${extraNotes}<table class="comparison"><thead><tr><th>${esc(base)}</th><th>${esc(head)}</th></tr></thead>${blocks}</table></body></html>`;
 }
 $('exportPdf').onclick=()=>{
   if(!activePr||!noteRows.length)return;
@@ -193,13 +217,14 @@ $('exportNotes').onclick=()=>{if(overview)exportReview();};
 function renderFileNote(){const root=$('fileNoteBanner');root.replaceChildren();const note=reviewDraft.files?.[reviewPath];root.hidden=!note?.text;if(!note?.text)return;const heading=document.createElement('strong');heading.textContent='File note · '+reviewPath;const text=document.createElement('div');text.className='note-text';text.textContent=note.text;const edit=document.createElement('button');edit.textContent='Edit file note';edit.onclick=()=>editDraftNote('file');root.append(heading,text,edit);}
 function editDraftNote(scope){if(!activePr||saving||busy)return;const dialog=$('draftNoteDialog'),input=$('draftNoteText'),record=scope==='summary'?reviewDraft.summary:reviewDraft.files?.[reviewPath];$('draftNoteTitle').textContent=scope==='summary'?'PR #'+activePr.number+' summary':'File note · '+reviewPath;$('draftNoteHelp').textContent=scope==='summary'?'General feedback for this PR. Saved locally until you explicitly submit the review.':'Feedback about this file as a whole. Saving does not mark every change in the file reviewed.';input.defaultValue=record?.text||'';input.value=input.defaultValue;$('draftNoteStatus').textContent='';$('deleteDraftNote').hidden=!record?.text;input.setAttribute('aria-label',scope==='summary'?'PR summary':'File note');let editing=false;const close=async()=>{if(editing)return;if(input.value!==input.defaultValue&&!await askDiscard())return;input.value=input.defaultValue='';dialog.close();};$('cancelDraftNote').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};async function persist(text){editing=true;saving++;controls();for(const id of ['saveDraftNote','cancelDraftNote','deleteDraftNote'])$(id).disabled=true;input.disabled=true;$('draftNoteStatus').textContent='Saving…';try{const result=await api('/api/draft',{pr:activePr.number,scope,path:reviewPath,text,versions:{left:activePr.left,right:activePr.right,base:activePr.base,head:activePr.head}});reviewDraft=result.draft;input.value=input.defaultValue='';dialog.close();renderFileNote();progress();}catch(e){$('draftNoteStatus').textContent='Not saved: '+e.message;}finally{editing=false;saving--;controls();input.disabled=false;for(const id of ['saveDraftNote','cancelDraftNote','deleteDraftNote'])$(id).disabled=false;}}$('saveDraftNote').onclick=()=>persist(input.value);$('deleteDraftNote').onclick=()=>persist('');dialog.showModal();input.focus();}
 $('prSummary').onclick=()=>editDraftNote('summary');$('fileNote').onclick=()=>editDraftNote('file');
-function previewSubmitControls(){$('submitPreview').disabled=!preparedReview?.canSubmit||!$('confirmSubmit').checked||submittingReview||preparedReview?.submitted;$('confirmSubmit').disabled=submittingReview||!preparedReview?.canSubmit;$('closePreview').disabled=submittingReview;$('downloadPreview').disabled=submittingReview||!preparedReview;}
-$('previewReview').onclick=async()=>{if(!activePr||busy||saving)return;if(dirty()){$('error').textContent='Save or cancel the open note before previewing the review.';return;}const dialog=$('reviewPreview');preparedReview=null;$('previewContents').textContent='Preparing saved notes…';$('previewDestination').textContent='';$('previewStatus').textContent='';$('previewAuth').textContent='';$('confirmSubmit').checked=false;previewSubmitControls();dialog.showModal();try{const data=await api('/api/review-preview',{pr:activePr.number,left:activePr.left,right:activePr.right});preparedReview=data;$('previewDestination').textContent=`Destination: ${data.repo} · PR #${data.pr} · commit ${data.right.slice(0,8)} · ${data.files.length} file comment(s).`;
-const root=$('previewContents');root.replaceChildren();const heading=document.createElement('h3');heading.textContent='PR review summary';const summary=document.createElement('pre');summary.textContent=data.displayBody||data.body;root.append(heading,summary);for(const file of data.files){const title=document.createElement('h3');title.textContent=file.path;const text=document.createElement('pre');text.textContent=file.displayBody||file.body;root.append(title,text);}$('previewAuth').textContent=data.canSubmit?'Submission creates a Comment review with one thread per commented file. Local Reviewed marks do not approve the PR.':'To submit: sign in with gh auth login or set GH_TOKEN, then reopen this preview. Export works without signing in.';if(data.incomplete.length)$('previewStatus').textContent='Some files could not be rendered: '+data.incomplete.join(', ');previewSubmitControls();}catch(e){$('previewContents').textContent=e.message;}};
-$('confirmSubmit').onchange=previewSubmitControls;$('closePreview').onclick=()=>{if(!submittingReview)$('reviewPreview').close();};$('reviewPreview').oncancel=event=>{if(submittingReview)event.preventDefault();};
+function copyText(text,status){return navigator.clipboard.writeText(text).then(()=>{status.textContent='Copied. Paste into GitHub, then submit there.';}).catch(()=>{status.textContent='Clipboard unavailable. Select the preview text to copy, or export the Markdown file.';});}
+function previewCopyControls(){$('copyReview').disabled=!preparedReview;$('downloadPreview').disabled=!preparedReview;$('openReviewGithub').hidden=!preparedReview;}
+$('previewReview').onclick=async()=>{if(!activePr||busy||saving)return;if(dirty()){$('error').textContent='Save or cancel the open note before previewing the review.';return;}const dialog=$('reviewPreview');preparedReview=null;$('previewContents').textContent='Preparing saved notes…';$('previewDestination').textContent='';$('previewStatus').textContent='';previewCopyControls();dialog.showModal();try{const data=await api('/api/review-preview',{pr:activePr.number,left:activePr.left,right:activePr.right});preparedReview=data;$('previewDestination').textContent=`PR #${data.pr} · ${data.repo} · reviewed commit ${data.right.slice(0,8)} · ${data.files.length} file / chunk notes`;
+const root=$('previewContents');root.replaceChildren();const heading=document.createElement('h3');heading.textContent='PR review summary';const summary=document.createElement('pre');summary.textContent=data.displayBody||data.body;root.append(heading,summary);for(const file of data.files){const title=document.createElement('h3');title.textContent=file.path+' · '+file.heading;const location=document.createElement('p');location.textContent=file.location;location.hidden=file.kind==='file';const text=document.createElement('pre');text.textContent=file.displayBody||file.body;const actions=document.createElement('div');actions.className='note-actions';const copy=document.createElement('button');copy.textContent='Copy comment';copy.onclick=()=>copyText(file.displayBody||file.body,$('previewStatus'));const link=document.createElement('a');link.textContent='Open GitHub location';link.href=file.url;link.target='_blank';link.rel='noreferrer';actions.append(copy,link);root.append(title,location,text,actions);}$('openReviewGithub').href=data.url+'/files';if(data.incomplete.length)$('previewStatus').textContent='Some files could not be rendered: '+data.incomplete.join(', ');previewCopyControls();}catch(e){$('previewContents').textContent=e.message;}};
+$('closePreview').onclick=()=>$('reviewPreview').close();
+$('copyReview').onclick=()=>{if(preparedReview)copyText(preparedReview.markdown,$('previewStatus'));};
 $('downloadPreview').onclick=()=>{if(preparedReview)download(preparedReview.markdown,`pr-${preparedReview.pr}-review-preview.md`);};
-$('submitPreview').onclick=async()=>{if(!preparedReview||!$('confirmSubmit').checked||!preparedReview.canSubmit||submittingReview)return;submittingReview=true;saving++;controls();previewSubmitControls();$('previewStatus').textContent='Submitting the confirmed review…';try{const result=await api('/api/submit-review',{pr:preparedReview.pr,id:preparedReview.id,confirm:true});preparedReview.submitted=true;$('previewStatus').replaceChildren(document.createTextNode(result.alreadySubmitted?'This review was already submitted. ':'Review submitted. '));const link=document.createElement('a');link.href=result.url;link.target='_blank';link.rel='noreferrer';link.textContent='Open review on GitHub';$('previewStatus').append(link);}catch(e){$('previewStatus').textContent=e.message;}finally{submittingReview=false;saving--;controls();previewSubmitControls();}};
-function confirmReviewReset(undo){return new Promise(resolve=>{const dialog=$('resetDialog');$('resetTitle').textContent=undo?'Undo reset for PR #'+activePr.number+'?':'Reset review for PR #'+activePr.number+'?';$('resetDescription').textContent=undo?'Restore notes and Reviewed marks from before the last reset. This replaces any notes or marks added since that reset.':"Clear the PR summary, all file/change notes, and Reviewed marks for this PR, across all documents and saved revisions, including any open draft. Other PRs are unaffected. You can undo the most recent reset.";$('confirmReset').textContent=undo?'Undo reset':'Reset review';let done=false;const finish=value=>{if(done)return;done=true;dialog.close();resolve(value);};$('cancelReset').onclick=()=>finish(false);$('confirmReset').onclick=()=>finish(true);dialog.oncancel=event=>{event.preventDefault();finish(false);};dialog.showModal();$('cancelReset').focus();});}
+function confirmReviewReset(undo){return new Promise(resolve=>{const dialog=$('resetDialog');$('resetTitle').textContent=undo?'Undo reset / import for PR #'+activePr.number+'?':'Reset review for PR #'+activePr.number+'?';$('resetDescription').textContent=undo?'Restore notes and Reviewed marks from before the last reset or import. This replaces any notes or marks added since then.':"Clear the PR summary, all file/change notes, and Reviewed marks for this PR, across all documents and saved revisions, including any open draft. Other PRs are unaffected. You can undo the most recent reset.";$('confirmReset').textContent=undo?'Undo reset / import':'Reset review';let done=false;const finish=value=>{if(done)return;done=true;dialog.close();resolve(value);};$('cancelReset').onclick=()=>finish(false);$('confirmReset').onclick=()=>finish(true);dialog.oncancel=event=>{event.preventDefault();finish(false);};dialog.showModal();$('cancelReset').focus();});}
 async function resetCurrentReview(undo=false){if(!activePr||busy||saving)return;if(!await confirmReviewReset(undo))return;busy=true;controls();$('error').textContent='';try{const result=await api(undo?'/api/undo-reset':'/api/reset',{pr:activePr.number});activePr.canUndo=result.canUndo;historyNotes={};reviewDraft=await api('/api/draft?pr='+activePr.number);overview=await api('/api/review-summary?'+new URLSearchParams({pr:activePr.number,left:activePr.left,right:activePr.right}));if(reviewPath)await compare(reviewPath);else{notes={};noteRows=[];filter();}$('fetchInfo').textContent=undo?'Previous review restored.':'Notes and Reviewed marks cleared for PR #'+activePr.number+'.';}catch(e){$('error').textContent='Could not '+(undo?'undo reset':'reset review')+': '+e.message;}finally{busy=false;controls();}}
 $('resetReview').onclick=()=>resetCurrentReview();$('undoReset').onclick=()=>resetCurrentReview(true);
 $('noteHistory').onclick=async()=>{
@@ -215,24 +240,70 @@ for(const id of ['only','hideReviewed'])$(id).onchange=()=>{if(dirty()&&$('hideR
 $('home').onclick=()=>document.querySelector('header').scrollIntoView({behavior:'smooth',block:'start'});
 $('reviewNext').onclick=async()=>{if(current<0||!changes[current])return;if(dirty()){$('error').textContent='Save or cancel your note first; saving it also marks the change reviewed.';return;}const el=changes[current],row=noteRows.find(row=>row.reviewKey===el.dataset.key);if(!row)return;saving++;controls();try{await mark(row,el,true);}catch(e){$('error').textContent='Could not save reviewed mark: '+e.message;}finally{saving--;controls();}};
 $('first').onclick=()=>jump(0);$('last').onclick=()=>jump(changes.length-1);$('next').onclick=()=>move(1);$('prev').onclick=()=>move(-1);
+$('resumeReview').onclick=async()=>{if(!await mayLeave())return;busy=true;controls();try{await resumeReview();}catch(e){$('error').textContent=e.message;}finally{busy=false;controls();}};
+$('backupReview').onclick=async()=>{if(!activePr||!await mayLeave())return;busy=true;controls();try{const backup=await api('/api/backup?pr='+activePr.number);download(JSON.stringify(backup,null,2),`pr-${activePr.number}-review-backup.json`,'application/json');}catch(e){$('error').textContent=e.message;}finally{busy=false;controls();}};
+$('importReview').onclick=async()=>{if(activePr&&await mayLeave()){$('backupFile').value='';$('backupFile').click();}};
+$('backupFile').onchange=async()=>{
+  const file=$('backupFile').files[0];if(!file||!activePr)return;
+  busy=true;controls();try{
+    if(file.size>10*1024*1024)throw Error('Backup must be at most 10 MB.');
+    const backup=JSON.parse(await file.text());const pr=activePr.number;
+    const counts=await api('/api/import-backup',{pr,backup});pendingImport={pr,backup};
+    $('importDescription').textContent=`PR #${counts.pr}: ${counts.notes} change notes, ${counts.fileNotes} file notes, ${counts.summary?'a PR summary':'no PR summary'}, and ${counts.reviewed} reviewed marks. Backup created: ${backup.exportedAt||'unknown'}.`;
+    $('importStatus').textContent='';$('importDialog').showModal();
+  }catch(e){pendingImport=null;$('error').textContent='Import failed: '+e.message;}finally{busy=false;controls();}
+};
+$('cancelImport').onclick=()=>{pendingImport=null;$('importDialog').close();};
+$('importDialog').oncancel=event=>{if(saving)event.preventDefault();else pendingImport=null;};
+$('confirmImport').onclick=async()=>{
+  if(!pendingImport||saving)return;saving++;controls();$('confirmImport').disabled=true;$('cancelImport').disabled=true;$('importStatus').textContent='Importing…';
+  try{await api('/api/import-backup',{...pendingImport,confirm:true});const pr=pendingImport.pr;pendingImport=null;$('importDialog').close();await selectPr(pr);}
+  catch(e){$('importStatus').textContent='Import failed: '+e.message;$('error').textContent='Import failed: '+e.message;}
+  finally{saving--;controls();$('confirmImport').disabled=false;$('cancelImport').disabled=false;}
+};
+function feedbackGroups(data,path){return {file:(data?.items||[]).filter(item=>item.kind==='file'&&item.path===path),pr:(data?.items||[]).filter(item=>item.kind!=='file')};}
+function renderFeedback(){
+  const panel=$('githubFeedback');panel.hidden=!activePr;if(!activePr)return;
+  const groups=feedbackGroups(feedback,reviewPath),root=$('feedbackList');root.replaceChildren();
+  $('feedbackTitle').textContent=`GitHub feedback · ${groups.file.length} for this file · ${groups.pr.length} PR comments / reviews`;
+  $('refreshFeedback').disabled=feedbackLoading||busy||saving>0;
+  $('feedbackStatus').textContent=feedbackLoading?'Loading GitHub feedback…':feedback?(feedback.warnings.length?'Feedback may be incomplete: '+feedback.warnings.join('; '):feedback.cached?'Cached feedback':'Feedback loaded')+(feedback.fetchedAt?' · '+new Date(feedback.fetchedAt*1000).toLocaleString():''):'';
+  for(const [title,items] of [['This file',groups.file],['PR discussion and reviews',groups.pr]]){
+    const heading=document.createElement('h3');heading.textContent=title;root.append(heading);
+    if(!items.length){const empty=document.createElement('p');empty.textContent=feedbackLoading?'Loading…':feedback?.warnings.length?'Feedback unavailable or incomplete.':'No feedback.';root.append(empty);}
+    for(const item of items){const article=document.createElement('article'),meta=document.createElement('strong'),text=document.createElement('pre');
+      meta.textContent=item.author+(item.state?' · '+item.state.replaceAll('_',' ').toLowerCase():'')+(item.line?' · '+(item.side==='LEFT'?'base':'proposed')+' line '+item.line:item.originalLine?' · original line '+item.originalLine:'')+(item.outdated?' · outdated location':'')+(item.replyTo?' · reply to #'+item.replyTo:'')+(item.created?' · '+new Date(item.created).toLocaleString():'');
+      text.textContent=item.body||'(Review submitted without a summary.)';article.append(meta,text);
+      if(/^https:\/\/github\.com\//.test(item.url)){const link=document.createElement('a');link.href=item.url;link.target='_blank';link.rel='noreferrer';link.textContent='View on GitHub';article.append(link);}root.append(article);
+    }
+  }
+}
+async function loadFeedback(force=false){
+  if(!activePr)return;const pr=activePr.number,request=++feedbackRequest;feedbackLoading=true;renderFeedback();
+  try{const result=await api('/api/feedback?'+new URLSearchParams({pr,refresh:force?'1':'0'}));if(request===feedbackRequest&&activePr?.number===pr)feedback=result;}
+  catch(e){if(request===feedbackRequest&&activePr?.number===pr)feedback={items:feedback?.items||[],warnings:[e.message]};}
+  finally{if(request===feedbackRequest&&activePr?.number===pr){feedbackLoading=false;renderFeedback();}}
+}
+$('refreshFeedback').onclick=()=>loadFeedback(true);
+$('showFeedback').onclick=()=>{$('githubFeedback').open=true;$('githubFeedback').scrollIntoView({block:'start',behavior:'instant'});};
 const prStatus=document.createElement('div');prStatus.className='pr-status';for(const id of ['prInfo','lastRefresh','fetchInfo','githubStatus'])prStatus.append($(id));document.querySelector('.pr-controls').append(prStatus);
 // Two compact rows; secondary actions live in a disclosure menu.
 const toolbar=document.querySelector('.toolbar');
 for(const [className,ids] of [['toolbar-nav',['home','first','prev','reviewNext','next','last','status']],['toolbar-meta',['only','hideReviewed','reviewProgress','prProgress']]]){const group=document.createElement('div');group.className=className;for(const id of ids){const el=$(id);group.append(el.type==='checkbox'?el.parentElement:el);}toolbar.append(group);}
 const more=document.createElement('details');more.className='toolbar-more';more.id='reviewOptions';
 const moreLabel=document.createElement('summary');moreLabel.textContent='More ⋯';moreLabel.setAttribute('aria-label','Review options');
-const menu=document.createElement('div');menu.className='toolbar-menu';for(const id of ['summary','noteCount','prSummary','fileNote','previewReview','noteHistory','exportNotes','exportPdf','resetReview','undoReset','legend'])menu.append($(id));more.append(moreLabel,menu);document.querySelector('.toolbar-nav').append(more);more.addEventListener('toggle',()=>{if(more.open)menu.style.maxHeight=Math.max(120,innerHeight-moreLabel.getBoundingClientRect().bottom-20)+'px';});
-for(const id of ['prSummary','fileNote','previewReview','noteHistory','exportNotes','exportPdf','resetReview','undoReset'])$(id).addEventListener('click',()=>{more.open=false;});
+const menu=document.createElement('div');menu.className='toolbar-menu';for(const id of ['summary','noteCount','resumeReview','backupReview','importReview','showFeedback','prSummary','fileNote','previewReview','noteHistory','exportNotes','exportPdf','resetReview','undoReset','legend'])menu.append($(id));more.append(moreLabel,menu);document.querySelector('.toolbar-nav').append(more);more.addEventListener('toggle',()=>{if(more.open)menu.style.maxHeight=Math.max(120,innerHeight-moreLabel.getBoundingClientRect().bottom-20)+'px';});
+for(const id of ['resumeReview','backupReview','importReview','showFeedback','prSummary','fileNote','previewReview','noteHistory','exportNotes','exportPdf','resetReview','undoReset'])$(id).addEventListener('click',()=>{more.open=false;});
 document.addEventListener('click',event=>{if(!more.contains(event.target))more.open=false;});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&more.open){more.open=false;moreLabel.focus();}});
 (async()=>{
   const printKey=new URLSearchParams(location.search).get('print');
-  if(printKey){toolbarObserver.disconnect();try{const snapshot=JSON.parse(sessionStorage.getItem('xml-review-print:'+printKey)||'null');if(!snapshot)throw Error('Print view expired. Return to the review and export again.');document.open();document.write(pdfHtml(snapshot.pr,snapshot.path,snapshot.rows,snapshot.notes,snapshot.draft));document.close();}catch(e){document.body.textContent=e.message;const back=document.createElement('a');back.href=location.pathname;back.textContent=' Back to review';document.body.append(back);}return;}
+  if(printKey){toolbarObserver.disconnect();try{const snapshot=JSON.parse(sessionStorage.getItem('xml-review-print:'+printKey)||'null');if(!snapshot)throw Error('Print view expired. Return to the review and export again.');document.open();document.write(pdfHtml(snapshot.pr,snapshot.path,snapshot.rows,snapshot.notes,snapshot.draft));document.close();document.getElementById('printNow').onclick=()=>window.print();document.getElementById('printBack').onclick=()=>history.back();}catch(e){document.body.textContent=e.message;const back=document.createElement('a');back.href=location.pathname;back.textContent=' Back to review';document.body.append(back);}return;}
   busy=true;clearReview();controls();
-  try{const context=await api('/api/context');storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
-    if(remembered.lastRefresh)$('lastRefresh').textContent='Last refreshed: '+new Date(remembered.lastRefresh).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
+  try{const context=await api('/api/context');if(context.static){$('fetchLatest').textContent='Check for updates';$('lastRefresh').textContent='Comparisons built: '+new Date(context.builtAt).toLocaleString();document.querySelector('header p').textContent='Review public PRs. Notes are saved in this browser; back them up to keep a copy.';}storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
+    if(!window.REVIEW_STATIC&&remembered.lastRefresh)$('lastRefresh').textContent='Last refreshed: '+new Date(remembered.lastRefresh).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     const q=new URLSearchParams(location.search),number=q.has('pr')?q.get('pr'):remembered.pr,path=q.get('path')||remembered.path;
     const restoreKey=String(number)===String(remembered.pr)&&path===remembered.path?remembered.block:null;
-    await loadPullRequests();if(number){if(prCatalog.some(pr=>String(pr.number)===String(number))&&![...$('pr').options].some(option=>option.value===String(number))){selectedLabel='';$('prLabel').value='';renderPrList();}$('pr').value=number;if($('pr').value)await selectPr(number,path,restoreKey);else $('prInfo').textContent='The previous PR is no longer open. Choose another PR.';}
+    await loadPullRequests();if(number){if(prCatalog.some(pr=>String(pr.number)===String(number))&&![...$('pr').options].some(option=>option.value===String(number))){selectedLabel='';$('prLabel').value='';renderPrList();}$('pr').value=number;if($('pr').value)await selectPr(number,path);else $('prInfo').textContent='The previous PR is no longer open. Choose another PR.';}
   }catch(e){$('error').textContent=e.message;}finally{busy=false;controls();}
 })();
