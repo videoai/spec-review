@@ -21,7 +21,7 @@ def main():
     if sys.platform!='win32':raise SystemExit('Build Windows executables on Windows (use the Windows build workflow).')
     os.chdir(ROOT);DIST.mkdir(exist_ok=True)
     if OUTPUT.exists():shutil.rmtree(OUTPUT)
-    run(sys.executable,'-m','PyInstaller','--noconfirm','--python-option','utf8','--onedir','--name','spec-review-service',*[arg for asset in ('index.html','app.js','review-core.js','pages.js') for arg in ('--add-data',asset+':.')],'desktop_service.py')
+    run(sys.executable,'-m','PyInstaller','--noconfirm','--python-option','X utf8','--onedir','--name','spec-review-service',*[arg for asset in ('index.html','app.js','review-core.js','pages.js') for arg in ('--add-data',asset+':.')],'desktop_service.py')
     run('dotnet','publish','desktop/windows/SpecReview.csproj','--configuration','Release','--runtime','win-x64','--self-contained','true','--output',OUTPUT,'-p:DebugType=None','-p:DebugSymbols=false')
     shutil.copytree(DIST/'spec-review-service',OUTPUT/'backend')
     for name,(url,digest) in DEPENDENCIES.items():

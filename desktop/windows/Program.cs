@@ -215,7 +215,11 @@ internal sealed class ReviewWindow : Form
             backend.Dispose(); backend = null;
         }
     }
-    private void Fail(Exception error) => MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+    private void Fail(Exception error)
+    {
+        if (smoke) { Console.Error.WriteLine(error); Environment.ExitCode = 1; allowClose = true; Close(); return; }
+        MessageBox.Show(this, error.Message, Text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
 }
 
 // Closing this handle terminates the private service, Git and gh even if the UI crashes.
