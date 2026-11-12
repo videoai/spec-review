@@ -325,10 +325,10 @@ class ChunkThreadTests(unittest.TestCase):
         server.git('init');server.git('config','user.name','Review Test');server.git('config','user.email','test@example.invalid')
     def commits(self,path,before,after):
         file=self.repo/path;file.parent.mkdir(parents=True,exist_ok=True)
-        if before is not None:file.write_text(before)
+        if before is not None:file.write_text(before,encoding="utf-8")
         server.git('add','.');server.git('commit','--allow-empty','-m','Base');left=server.git('rev-parse','HEAD').decode().strip()
         if after is None:file.unlink()
-        else:file.write_text(after)
+        else:file.write_text(after,encoding="utf-8")
         server.git('add','-A');server.git('commit','--allow-empty','-m','Proposed');right=server.git('rev-parse','HEAD').decode().strip()
         return left,right
     def doc(self,left,right,path):return server.review_summary(left,right,877)['documents'][0]
