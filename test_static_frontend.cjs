@@ -2,6 +2,21 @@ const assert=require('node:assert/strict');
 global.crypto=require('node:crypto').webcrypto;
 const Core=require('./review-core.js');
 (async()=>{
+ // Sign-in and sign-out are shared across repositories; only submission is restricted.
+ for(const repository of ['onvif/specs','videoai/test-specs']){
+  const calls=[],window={};
+  const sandbox={window,URL,location:{href:'https://review.example/'},fetch:async(url)=>{
+   calls.push(url);
+   return {ok:true,json:async()=>url==='./site.json'?{format:'onvif-spec-review-site',version:1,repository}:url==='/api/web/auth'?{signedIn:true,login:'reviewer',csrf:'test'}:{signedOut:true}};
+  }};
+  require('node:vm').runInNewContext(require('node:fs').readFileSync(require('node:path').join(__dirname,'pages.js'),'utf8'),sandbox);
+  assert.equal((await window.reviewBackend('/api/web/auth')).login,'reviewer');
+  assert.equal((await window.reviewBackend('/api/web/logout',{})).signedOut,true);
+  if(repository==='onvif/specs'){
+   await assert.rejects(window.reviewBackend('/api/web/submit',{}),/not enabled yet/);
+   assert.ok(!calls.includes('/api/web/submit'));
+  }
+ }
  const backup={format:'onvif-spec-review',version:1,repository:'org/repo',pr:877,notes:{['a'.repeat(64)]:{['b'.repeat(64)]:{text:'Note',path:'A.xml'}}},reviewed:{['c'.repeat(64)]:true},draft:{summary:{text:'Summary'},files:{'A.xml':{text:'File note'}}}};
  assert.equal(Core.validateBackup(backup,'org/repo',877).notes,1);
  assert.throws(()=>Core.validateBackup(backup,'other/repo',877),/different/);

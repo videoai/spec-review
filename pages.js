@@ -54,7 +54,7 @@ window.REVIEW_STATIC=true;
       return {id:'pages:'+site.repository,repo:site.repository,static:true,builtAt:site.builtAt,hosted:config.auth===true,webSubmit:config.submitAllowed!==false&&site.repository==='videoai/test-specs',webAuth:config.auth===true&&config.submitAllowed!==false&&site.repository==='videoai/test-specs',repositories:config.auth===true?['onvif/specs','videoai/test-specs']:undefined};
     }
     if(route.startsWith('/api/web/')){
-      if(site.repository!=='videoai/test-specs')throw Error('Website submission is restricted to videoai/test-specs.');
+      if(route==='/api/web/submit'&&site.repository!=='videoai/test-specs')throw Error('GitHub submission for onvif/specs is not enabled yet. Select the test repository to try submitting a review.');
       const response=await fetch(route,{method:payload?'POST':'GET',credentials:'same-origin',headers:payload?{'Content-Type':'application/json','X-Review-CSRF':webCsrf}:{},body:payload?JSON.stringify(payload):undefined,cache:'no-store'}),value=await response.json();
       if(!response.ok)throw Error(value.error||'Request failed.');if(route==='/api/web/auth')webCsrf=value.csrf||'';return value;
     }
