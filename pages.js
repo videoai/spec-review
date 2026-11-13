@@ -51,7 +51,7 @@ window.REVIEW_STATIC=true;
     const request=new URL(url,location.href),q=request.searchParams,route=request.pathname,pr=payload?.pr||q.get('pr'),site=await loadManifest();
     if(route==='/api/context'){
       const response=await fetch('./web-config.json',{cache:'no-store'}),config=response.ok?await response.json():{};
-      return {id:'pages:'+site.repository,repo:site.repository,static:true,builtAt:site.builtAt,hosted:config.auth===true,webAuth:config.auth===true&&config.submitAllowed!==false&&site.repository==='videoai/test-specs',repositories:config.auth===true?['onvif/specs','videoai/test-specs']:undefined};
+      return {id:'pages:'+site.repository,repo:site.repository,static:true,builtAt:site.builtAt,hosted:config.auth===true,webSubmit:config.submitAllowed!==false&&site.repository==='videoai/test-specs',webAuth:config.auth===true&&config.submitAllowed!==false&&site.repository==='videoai/test-specs',repositories:config.auth===true?['onvif/specs','videoai/test-specs']:undefined};
     }
     if(route.startsWith('/api/web/')){
       if(site.repository!=='videoai/test-specs')throw Error('Website submission is restricted to videoai/test-specs.');
