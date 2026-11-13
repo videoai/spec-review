@@ -2,7 +2,7 @@
 
 This Cloudflare Worker serves a repository selector for `videoai/test-specs` and `onvif/specs` from published GitHub Pages builds, with same-origin GitHub App sign-in and confirmed comment-review submission. It refuses writes to every other repository, including `onvif/specs`. The main ONVIF Pages viewer stays static.
 
-The initial URL is https://spec-review-test.spec-tools.workers.dev/. The viewer and API share this origin, so sign-in does not rely on third-party cookies. Notes in this viewer belong to its browser origin; use backup/import to move notes from Pages or the desktop app.
+The initial URL is https://spec-review-test.spec-tools.workers.dev/. The viewer and API share this origin, so sign-in does not rely on third-party cookies. Notes in this viewer belong to its browser origin; use backup/import to move notes between the published sites.
 
 ## Deploy
 

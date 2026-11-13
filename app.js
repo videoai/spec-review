@@ -1,5 +1,4 @@
 const $ = id => document.getElementById(id);
-function desktopBridge(){return window.webkit?.messageHandlers?.desktop||window.chrome?.webview;}
 let feedback=null,feedbackLoading=false,feedbackRequest=0,pendingImport=null;
 let prCatalog=[],selectedLabel='';
 let reviewDraft={summary:{},files:{}},preparedReview=null;
@@ -17,11 +16,10 @@ async function api(url, payload) {
 function githubMessage(message,retryAt){if(!retryAt)return message;const minutes=Math.max(0,Math.ceil((retryAt*1000-Date.now())/60000));return `GitHub rate limit reached. Retry after ${new Date(retryAt*1000).toLocaleString()} (about ${minutes} min).`;}
 function githubNotice(meta){if(!meta)return;if(meta.stale){$('githubStatus').textContent='Using cached GitHub data. '+githubMessage(meta.warning||'GitHub is unavailable.',meta.retryAt);}else if(!$('githubStatus').textContent.startsWith('Using cached GitHub data.')){$('githubStatus').textContent=meta.cached?'Cached GitHub data · '+new Date(meta.fetchedAt*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'}):'';}}
 function plain(markup) { const div=document.createElement('div'); div.innerHTML=markup; return div.textContent.trim(); }
-function readStored() { if(window.DESKTOP_REVIEW)return window.DESKTOP_PREFERENCES||{};try { return JSON.parse(localStorage.getItem(storageKey)||'{}'); } catch { return {}; } }
+function readStored() { try { return JSON.parse(localStorage.getItem(storageKey)||'{}'); } catch { return {}; } }
 function remember() {
   if (!storageKey) return;
   remembered={...remembered,pr:activePr?.number||null,path:reviewPath,only:$('only').checked,hideReviewed:$('hideReviewed').checked,label:selectedLabel,block:changes[current]?.dataset.key||null};
-  if(window.DESKTOP_REVIEW){api('/api/desktop/preferences',remembered).catch(()=>{$('error').textContent='Could not save your review position. Notes are saved separately.';});return;}
   try { localStorage.setItem(storageKey,JSON.stringify(remembered)); } catch { /* Review works when browser storage is unavailable. */ }
 }
 function dirty() { return !!document.querySelector('.note-area[data-suggestion-changed="true"]')||[...document.querySelectorAll('.note-area textarea, #draftNoteDialog[open] textarea')].some(el=>el.value!==el.defaultValue); }
@@ -173,14 +171,12 @@ async function selectPr(number,path='',restoreKey=null,force=false){
   feedback=null;feedbackRequest++;feedbackLoading=false;$('githubFeedback').hidden=true;
   // Clear old content immediately so a failed load cannot be mistaken for the chosen PR.
   $('rows').replaceChildren();$('error').textContent='';$('prInfo').textContent='Loading PR #'+number+'…';overview=null;activePr=null;notes={};noteRows=[];changes=[];current=-1;$('summary').textContent='Loading PR #'+number+'…';filter(false);controls();
-  $('fetchInfo').textContent=window.DESKTOP_REVIEW?'Opening PR #'+number+' · downloading history if needed…':$('fetchInfo').textContent;
   activePr=await api('/api/pr?number='+encodeURIComponent(number)+(force?'&refresh=1':''));activePr.canUndo=(await api('/api/reset-status?pr='+activePr.number)).canUndo;reviewDraft=await api('/api/draft?pr='+activePr.number);githubNotice(activePr.github);labels();
   overview=await api('/api/review-summary?'+new URLSearchParams({pr:activePr.number,left:activePr.left,right:activePr.right}));
   $('prInfo').textContent=`#${activePr.number} · ${activePr.files.length} changed files`;
   $('prDoc').replaceChildren();for(const file of activePr.files)$('prDoc').add(new Option(file,file));
   if(activePr.files.length)await compare(activePr.files.includes(path)?path:activePr.files[0],restoreKey);
   else{reviewPath='';notes={};noteRows=[];changes=[];current=-1;$('prDoc').add(new Option('No changed files',''));$('summary').textContent='This PR has no changed files';filter();}
-  if(window.DESKTOP_REVIEW){$('repoUpdate').hidden=true;const cached=activePr.cache;if(cached)$('fetchInfo').textContent=(cached.offline?'Offline · downloaded ':'Downloaded ')+new Date(cached.downloadedAt*1000).toLocaleString();}
   loadFeedback();
   const errors=overview.documents.filter(doc=>doc.error);if(errors.length)$('error').textContent=`Could not render ${errors.length} file(s); PR review is incomplete. See the file selector or export for details.`;
 }
@@ -201,13 +197,12 @@ function updateMessage(before,after){
   return `${incoming.length-recheck} new · ${after.filter(row=>row.reviewed).length} reviewed retained · ${recheck} need another look · ${removed.length} earlier changes replaced or removed`;
 }
 $('fetchLatest').onclick=async()=>{
-  if(window.DESKTOP_REVIEW){await refreshDesktop();return;}
   if(!await mayLeave())return;const number=activePr?.number||'',path=reviewPath,block=changes[current]?.dataset.key,prior=snapshot();busy=true;controls();$('fetchInfo').textContent=window.REVIEW_STATIC?'Checking published comparisons…':'Fetching origin…';
   try{await api('/api/fetch',{});await loadPullRequests(true);if(number&&[...$('pr').options].some(option=>option.value===String(number))){$('pr').value=number;await selectPr(number,path,block);$('fetchInfo').textContent=(activePr.github?.stale?'Showing cached comparison. ':'')+updateMessage(prior,snapshot());}else{clearReview(true);$('fetchInfo').textContent=number?'Fetched latest. The selected PR is no longer open.':'Fetched latest. Choose a PR to begin.';}
     if(!window.REVIEW_STATIC&&activePr?.github?.stale)throw Error('Git fetch succeeded, but GitHub metadata is still cached. '+githubMessage(activePr.github.warning,activePr.github.retryAt));remembered.lastRefresh=new Date().toISOString();$('lastRefresh').textContent=window.REVIEW_STATIC?'Comparisons built: '+new Date((await api('/api/context')).builtAt).toLocaleString():'Last refreshed: '+new Date(remembered.lastRefresh).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});if(window.REVIEW_STATIC)$('fetchInfo').textContent+=' · Published snapshots; PR updates appear after the next build.';remember();
   }catch(e){$('fetchInfo').textContent='Refresh incomplete: '+e.message;}finally{busy=false;controls();}
 };
-function download(text,name,mime='text/markdown'){if(desktopBridge()){desktopBridge().postMessage({action:'save',text,name});return;}const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:mime}));link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
+function download(text,name,mime='text/markdown'){const link=document.createElement('a');link.href=URL.createObjectURL(new Blob([text],{type:mime}));link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(link.href),1000);}
 function exportReview(){
   const draft=ReviewCore.normalizeDraft(reviewDraft);
   const commented=overview.documents.map(doc=>({...doc,changes:doc.changes.filter(row=>row.note?.text?.trim()||row.note?.suggestion)})).filter(doc=>doc.changes.length);
@@ -238,7 +233,7 @@ $('exportPdf').onclick=()=>{
 $('exportNotes').onclick=()=>{if(overview)exportReview();};
 function editDraftNote(){if(!activePr||saving||busy)return;const dialog=$('draftNoteDialog'),input=$('draftNoteText'),record=reviewDraft.summary;$('draftNoteTitle').textContent='PR #'+activePr.number+' summary';$('draftNoteHelp').textContent='Overall feedback for this PR. For feedback about a whole file, include its filename here. Saved locally until you submit the review.';input.defaultValue=record?.text||'';input.value=input.defaultValue;$('draftNoteStatus').textContent='';$('deleteDraftNote').hidden=!record?.text;input.setAttribute('aria-label','PR summary');let editing=false;const close=async()=>{if(editing)return;if(input.value!==input.defaultValue&&!await askDiscard())return;input.value=input.defaultValue='';dialog.close();};$('cancelDraftNote').onclick=close;dialog.oncancel=event=>{event.preventDefault();close();};async function persist(text){editing=true;saving++;controls();for(const id of ['saveDraftNote','cancelDraftNote','deleteDraftNote'])$(id).disabled=true;input.disabled=true;$('draftNoteStatus').textContent='Saving…';try{const result=await api('/api/draft',{pr:activePr.number,scope:'summary',text,versions:{left:activePr.left,right:activePr.right,base:activePr.base,head:activePr.head}});reviewDraft=result.draft;input.value=input.defaultValue='';dialog.close();progress();if($('notesDialog').open)$('noteHistory').onclick();}catch(e){$('draftNoteStatus').textContent='Not saved: '+e.message;}finally{editing=false;saving--;controls();input.disabled=false;for(const id of ['saveDraftNote','cancelDraftNote','deleteDraftNote'])$(id).disabled=false;}}$('saveDraftNote').onclick=()=>persist(input.value);$('deleteDraftNote').onclick=()=>persist('');dialog.showModal();input.focus();}
 $('prSummary').onclick=()=>editDraftNote();
-function copyText(text,status){if(desktopBridge()){desktopBridge().postMessage({action:'copy',text});status.textContent='Copied.';return Promise.resolve();}return navigator.clipboard.writeText(text).then(()=>{status.textContent='Copied. Paste into GitHub, then submit there.';}).catch(()=>{status.textContent='Clipboard unavailable. Select the preview text to copy, or export the Markdown file.';});}
+function copyText(text,status){return navigator.clipboard.writeText(text).then(()=>{status.textContent='Copied. Paste into GitHub, then submit there.';}).catch(()=>{status.textContent='Clipboard unavailable. Select the preview text to copy, or export the Markdown file.';});}
 function previewCopyControls(){$('copyReview').disabled=!preparedReview;$('downloadPreview').disabled=!preparedReview;$('openReviewGithub').hidden=!preparedReview;}
 $('previewReview').onclick=async()=>{if(!activePr||busy||saving)return;if(dirty()){$('error').textContent='Save or cancel the open note before previewing the review.';return;}const dialog=$('reviewPreview');preparedReview=null;$('previewContents').textContent='Preparing saved notes…';$('previewDestination').textContent='';$('previewStatus').textContent='';previewCopyControls();dialog.showModal();try{const data=await api('/api/review-preview',{pr:activePr.number,left:activePr.left,right:activePr.right});preparedReview=data;$('previewDestination').textContent=`PR #${data.pr} · ${data.repo} · reviewed commit ${data.right.slice(0,8)} · ${data.files.length} file / chunk notes`;
 const root=$('previewContents');root.replaceChildren();const heading=document.createElement('h3');heading.textContent='PR review summary';const summary=document.createElement('pre');summary.textContent=data.displayBody||data.body;root.append(heading,summary);for(const file of data.files){const title=document.createElement('h3');title.textContent=file.path+' · '+file.heading;const location=document.createElement('p');location.textContent=file.location;location.hidden=file.kind==='file';const text=document.createElement('pre');text.textContent=file.displayBody||file.body;const actions=document.createElement('div');actions.className='note-actions';const copy=document.createElement('button');copy.textContent='Copy comment';copy.onclick=()=>copyText(file.displayBody||file.body,$('previewStatus'));const link=document.createElement('a');link.textContent='Open GitHub location';link.href=file.url;link.target='_blank';link.rel='noreferrer';actions.append(copy,link);root.append(title,location,text,actions);}$('openReviewGithub').href=data.url+'/files';if(data.incomplete.length)$('previewStatus').textContent='Some files could not be rendered: '+data.incomplete.join(', ');previewCopyControls();}catch(e){$('previewContents').textContent=e.message;}};
@@ -324,13 +319,13 @@ document.addEventListener('click',event=>{if(!more.contains(event.target))more.o
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&more.open){more.open=false;moreLabel.focus();}});
 (async()=>{
   const printKey=new URLSearchParams(location.search).get('print');
-  if(printKey){toolbarObserver.disconnect();try{const snapshot=JSON.parse(sessionStorage.getItem('xml-review-print:'+printKey)||'null');if(!snapshot)throw Error('Print view expired. Return to the review and export again.');document.open();document.write(pdfHtml(snapshot.pr,snapshot.path,snapshot.rows,snapshot.notes,snapshot.draft));document.close();document.getElementById('printNow').onclick=()=>desktopBridge()?desktopBridge().postMessage({action:'print'}):window.print();document.getElementById('printBack').onclick=()=>history.back();}catch(e){document.body.textContent=e.message;const back=document.createElement('a');back.href=location.pathname;back.textContent=' Back to review';document.body.append(back);}return;}
+  if(printKey){toolbarObserver.disconnect();try{const snapshot=JSON.parse(sessionStorage.getItem('xml-review-print:'+printKey)||'null');if(!snapshot)throw Error('Print view expired. Return to the review and export again.');document.open();document.write(pdfHtml(snapshot.pr,snapshot.path,snapshot.rows,snapshot.notes,snapshot.draft));document.close();document.getElementById('printNow').onclick=()=>window.print();document.getElementById('printBack').onclick=()=>history.back();}catch(e){document.body.textContent=e.message;const back=document.createElement('a');back.href=location.pathname;back.textContent=' Back to review';document.body.append(back);}return;}
   busy=true;clearReview();controls();
-  try{const context=await api('/api/context');if(context.desktop){window.DESKTOP_REVIEW=true;setupRepositoryPicker(context);window.DESKTOP_PREFERENCES=context.preferences||{};document.body.classList.add('desktop');document.querySelector('header p').textContent='Review changes. Keep notes. Submit to GitHub.';}if(context.hosted)setupRepositoryPicker(context);if(context.hosted){window.WEB_SUBMIT=context.webSubmit===true;window.WEB_REVIEW=true;document.body.classList.add('web-review');setupWebReview();}if(context.static){$('fetchLatest').textContent='Check for updates';$('lastRefresh').textContent='Comparisons built: '+new Date(context.builtAt).toLocaleString();document.querySelector('header p').textContent='Review public PRs. Notes are saved in this browser; back them up to keep a copy.';}storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
+  try{const context=await api('/api/context');if(context.hosted)setupRepositoryPicker(context);if(context.hosted){window.WEB_SUBMIT=context.webSubmit===true;window.WEB_REVIEW=true;document.body.classList.add('web-review');setupWebReview();}if(context.static){$('fetchLatest').textContent='Check for updates';$('lastRefresh').textContent='Comparisons built: '+new Date(context.builtAt).toLocaleString();document.querySelector('header p').textContent='Review public PRs. Notes are saved in this browser; back them up to keep a copy.';}storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
     if(!window.REVIEW_STATIC&&remembered.lastRefresh)$('lastRefresh').textContent='Last refreshed: '+new Date(remembered.lastRefresh).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     const q=new URLSearchParams(location.search),number=q.has('pr')?q.get('pr'):remembered.pr,path=q.get('path')||remembered.path;
     const restoreKey=String(number)===String(remembered.pr)&&path===remembered.path?remembered.block:null;
-    await loadPullRequests(!!context.desktop);if(context.migration?.copied)$('fetchInfo').textContent='Copied '+context.migration.copied+' existing review files into app storage.';if(context.migration?.warnings?.length){const warning=document.createElement('p');warning.setAttribute('role','alert');warning.style.color='#963c30';warning.textContent=context.migration.warnings.join(' ');document.querySelector('.pr-status').append(warning);}if(number){if(prCatalog.some(pr=>String(pr.number)===String(number))&&![...$('pr').options].some(option=>option.value===String(number))){selectedLabel='';$('prLabel').value='';renderPrList();}$('pr').value=number;if($('pr').value)await selectPr(number,path);else $('prInfo').textContent='The previous PR is no longer open. Choose another PR.';}
+    await loadPullRequests();if(number){if(prCatalog.some(pr=>String(pr.number)===String(number))&&![...$('pr').options].some(option=>option.value===String(number))){selectedLabel='';$('prLabel').value='';renderPrList();}$('pr').value=number;if($('pr').value)await selectPr(number,path);else $('prInfo').textContent='The previous PR is no longer open. Choose another PR.';}
   }catch(e){$('error').textContent=e.message;}finally{busy=false;controls();}
   if(window.WEB_REVIEW&&new URLSearchParams(location.search).get('finish')==='1'){
     const next=new URL(location.href);next.searchParams.delete('finish');history.replaceState(null,'',next);$('previewReview').click();
@@ -361,70 +356,13 @@ $('summary').hidden=true;$('noteCount').hidden=true;$('legend').hidden=true;
 // Retain status elements for existing progress updates without a large menu.
 toolbar.append($('summary'),$('noteCount'),$('legend'));
 const oldPreview=$('previewReview').onclick;
-$('previewReview').onclick=async()=>{$('webReviewActions')?.remove();await oldPreview();if(window.DESKTOP_REVIEW&&preparedReview)await desktopPreview();else if(window.WEB_REVIEW&&preparedReview)await webPreview();};
-function renderLoginStatus(status,message){
- const url='https://github.com/login/device';
- const index=message.indexOf(url);
- if(index<0){status.textContent=message;return;}
- const link=document.createElement('a');link.href=url;link.textContent=url;link.target='_blank';link.rel='noopener noreferrer';
- status.replaceChildren(document.createTextNode(message.slice(0,index)),link,document.createTextNode(message.slice(index+url.length)));
- const code=message.match(/\b[A-Z0-9]{4}-[A-Z0-9]{4}\b/)?.[0];
- if(code){
-  const copy=document.createElement('button');copy.type='button';copy.textContent='Copy code';copy.setAttribute('aria-label','Copy GitHub sign-in code');copy.style.marginLeft='10px';copy.style.padding='6px 10px';
-  const feedback=document.createElement('span');feedback.setAttribute('role','status');feedback.style.marginLeft='8px';
-  copy.onclick=async()=>{try{if(desktopBridge())desktopBridge().postMessage({action:'copy',text:code});else await navigator.clipboard.writeText(code);feedback.textContent='Code copied';}catch{feedback.textContent='Could not copy. Select the code and copy it manually.';}};
-  status.append(copy,feedback);
- }
-}
-async function desktopPreview(){
- let box=$('desktopSubmit');if(!box){box=document.createElement('section');box.id='desktopSubmit';$('previewStatus').before(box);}
- box.replaceChildren();box.textContent='Checking GitHub sign-in…';
- let auth;try{auth=await api('/api/desktop/auth');}catch(e){box.textContent='Could not check GitHub sign-in: '+e.message;return;}box.replaceChildren();const status=document.createElement('p');status.textContent=auth.login?'Signed in as '+auth.login:'Sign in with GitHub to submit directly. GitHub CLI permissions may cover other repositories; this app submits only to the selected repository.';box.append(status);
- if(!auth.login){if(auth.message)renderLoginStatus(status,auth.message);const login=document.createElement('button');login.textContent='Sign in with GitHub…';login.onclick=async()=>{login.disabled=true;try{const result=await api('/api/desktop/login',{});renderLoginStatus(status,result.message);const timer=setInterval(async()=>{if(!$('reviewPreview').open){clearInterval(timer);return;}const state=await api('/api/desktop/auth');if(state.message)renderLoginStatus(status,state.message);if(state.login){clearInterval(timer);desktopPreview();}},2500);}catch(e){status.textContent=e.message;login.disabled=false;}};box.append(login);return;}
- const label=document.createElement('label');label.className='submit-confirm';const check=document.createElement('input');check.type='checkbox';label.append(check,document.createTextNode('Post this summary and these comments to '+preparedReview.repo+' PR #'+preparedReview.pr+'.'));
- const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit review to GitHub';submit.disabled=true;check.onchange=()=>submit.disabled=!check.checked;
- submit.onclick=async()=>{submit.disabled=true;check.disabled=true;$('closePreview').disabled=true;status.textContent='Submitting review…';try{const result=await api('/api/desktop/submit',{pr:preparedReview.pr,left:preparedReview.left,right:preparedReview.right,id:preparedReview.id,confirm:true});status.textContent='Review submitted.';const link=document.createElement('a');link.href=result.url;link.target='_blank';link.textContent='View on GitHub';box.append(link);}catch(e){status.textContent=e.message;}finally{$('closePreview').disabled=false;}};box.append(label,submit);
-}
-
-// Checking GitHub never replaces an open comparison. Loading updates is explicit.
-const repoUpdate=document.createElement('section');repoUpdate.id='repoUpdate';repoUpdate.hidden=true;repoUpdate.setAttribute('role','status');
-const updateText=document.createElement('span'),loadUpdate=document.createElement('button');loadUpdate.textContent='Load updated version';repoUpdate.append(updateText,loadUpdate);document.querySelector('main').before(repoUpdate);
-async function checkDesktopUpdate(){
- if(!activePr)return;
- const number=activePr.number,right=activePr.right;
- const result=await api('/api/desktop/update?'+new URLSearchParams({pr:number,right}));
- if(activePr?.number!==number||activePr?.right!==right)return;
- githubNotice(result.github);
- if(result.available||result.closed){updateText.textContent=result.closed?'This PR is now closed on GitHub. You can continue reviewing this downloaded version.':result.message;loadUpdate.hidden=!!result.closed;repoUpdate.hidden=false;}
- else{$('fetchInfo').textContent=result.message?.startsWith('Could not')?result.message:'Up to date · checked '+new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});repoUpdate.hidden=true;}
-}
-async function refreshDesktop(){
- if(busy||saving)return;busy=true;controls();$('fetchInfo').textContent='Checking GitHub for updates…';
- try{await loadPullRequests(true);if(activePr)await checkDesktopUpdate();else $('fetchInfo').textContent='PR list refreshed. Choose a PR to download.';}
- catch(e){$('fetchInfo').textContent='Could not refresh GitHub: '+e.message+'. Downloaded reviews remain available.';}
- finally{busy=false;controls();}
-}
-loadUpdate.onclick=async()=>{
- if(!activePr||busy||saving||!await mayLeave())return;
- const number=activePr.number,path=reviewPath,prior=snapshot(),block=changes[current]?.dataset.key;
- busy=true;controls();loadUpdate.disabled=true;
- try{await selectPr(number,path,block,true);$('fetchInfo').textContent=(activePr.github?.stale?'Using downloaded revision. ':'')+updateMessage(prior,snapshot());}
- catch(e){$('error').textContent='Could not load the update: '+e.message;}
- finally{busy=false;controls();loadUpdate.disabled=false;}
-};
-setInterval(async()=>{
- if(!window.DESKTOP_REVIEW)return;
- try{const status=await api('/api/desktop/status');if(status.busy)$('fetchInfo').textContent=status.message;}catch{/* Startup/restart: the current comparison remains visible. */}
-},1500);
-setInterval(()=>{if(window.DESKTOP_REVIEW&&activePr&&!busy&&!saving&&!document.hidden)checkDesktopUpdate().catch(()=>{});},300000);
-
+$('previewReview').onclick=async()=>{$('webReviewActions')?.remove();await oldPreview();if(window.WEB_REVIEW&&preparedReview)await webPreview();};
 function setupRepositoryPicker(context){
  const label=document.createElement('label');label.id='repositoryControl';label.append(document.createTextNode('Repository'));
  const select=document.createElement('select');select.setAttribute('aria-label','Review repository');
  for(const repo of context.repositories||[context.repo])select.add(new Option(repo==='videoai/test-specs'?repo+' · playground':repo,repo));select.value=context.repo;
  label.append(select);const container=document.createElement('div');container.className='repository-controls';container.append(label);document.querySelector('.pr-controls').before(container);
- select.onchange=async()=>{const selected=select.value;if(busy||saving||!await mayLeave()){select.value=context.repo;return;}if(context.hosted){location.assign(selected==='onvif/specs'?'/onvif/':'/');return;}if(!desktopBridge()){select.value=context.repo;return;}
-  busy=true;controls();select.disabled=true;$('fetchInfo').textContent='Opening '+selected+'…';desktopBridge().postMessage({action:'repository',text:selected});};
+ select.onchange=async()=>{const selected=select.value;if(busy||saving||!await mayLeave()){select.value=context.repo;return;}location.assign(selected==='onvif/specs'?'/onvif/':'/');};
 }
 
 function appendSuggestion(root,note){

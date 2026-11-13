@@ -8,8 +8,4 @@ __pycache__/
 dist/
 build/
 *.spec
-.venv-mac/
 
-desktop/windows/bin/
-desktop/windows/obj/
-.venv-windows/

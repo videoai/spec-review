@@ -1,6 +1,6 @@
 # ONVIF Spec Review
 
-Standalone viewer hosted at **https://videoai.github.io/spec-review/**. The tool lives in `videoai/spec-review` and reads the public **`onvif/specs`** repository. It does not change or publish ONVIF’s own website.
+Browser-based viewer hosted at **https://spec-review-test.spec-tools.workers.dev/**, with static comparisons also available at **https://videoai.github.io/spec-review/**. The tool lives in `videoai/spec-review` and reads the public **`onvif/specs`** repository. It does not change or publish ONVIF’s own website.
 
 Review public pull requests as formatted, side-by-side documents. DocBook keeps headings, paragraphs, tables, parameter lists, and diagrams. Other text files use source diffs; raster images have before/after previews. Other binary files show metadata.
 
@@ -41,10 +41,10 @@ Public repositories can be read anonymously. For private repositories in local m
 ## Review workflow
 
 - A label filter narrows the PR list without additional GitHub requests. Each file and the toolbar show review progress across all changed files.
-- Opening a PR resumes at the first unreviewed change across its files. **More → Resume review** returns there. Failed renders keep the PR incomplete.
+- Opening a PR or file starts at the top of the document. **More → Resume review** returns there. Failed renders keep the PR incomplete.
 - First, Previous, Next, and Last navigate only. **Reviewed & Next** saves the mark before advancing. Checking Reviewed or saving a nonempty change note also advances. Unchecking Reviewed lets you revisit a change.
 - Changes only and Hide reviewed filter the view. Home returns to PR/file selection. Navigation controls stay visible while scrolling.
-- **PR summary…**, **File note…**, and change notes serve different levels of feedback. A file note does not mark every change in that file reviewed. Draft warnings protect unfinished edits.
+- **Notes** contains the PR summary and saved change notes. Draft warnings protect unfinished edits.
 - Whole-file completion offers a link to the next unreviewed change. When all changes are reviewed, a banner says so. These local marks are not GitHub approvals.
 - **GitHub feedback…** shows comments for the selected file, PR discussion, and submitted review summaries. Text is displayed safely as Markdown source. Author, time, replies, line location, and outdated locations are shown where supplied. Replying/resolving happens on GitHub.
 
@@ -52,7 +52,7 @@ Local-server notes live in Git metadata, for example `xml-review-notes-pr-877.js
 
 ## Backup, reset, and exports
 
-**More → Back up PR review** downloads JSON containing the selected PR's summary, file notes, change notes from all saved comparisons, and reviewed marks. **Import PR backup…** validates the repository, PR, schema, and size (10 MB maximum), shows counts, then asks before replacing that PR's data. Other PRs are unchanged. Import replaces rather than merges conflicting edits.
+**More → Back up PR review** downloads JSON containing the selected PR's summary, change notes from all saved comparisons, and reviewed marks. **Import PR backup…** validates the repository, PR, schema, and size (10 MB maximum), shows counts, then asks before replacing that PR's data. Other PRs are unchanged. Import replaces rather than merges conflicting edits.
 
 **Reset review…** clears that PR's local notes and marks, including older comparisons. **Undo last reset / import…** restores the previous snapshot; only the latest undo is retained. Browser data can be imported into the local tool and vice versa. Backups do not contain credentials, Git history, browser preferences, or existing GitHub comments.
 
@@ -89,18 +89,6 @@ node test_static_frontend.cjs
 
 Tests cover comparison alignment, content identities, notes/review persistence, reset/import rollback, backup validation, source locations, read-only GitHub feedback, copy/paste exports, and static publication without private local review data. No real GitHub comments are posted by tests.
 
-## Mac app prototype
-
-A native Mac app bundles the local viewer, Python, Git and GitHub CLI. See [Mac build and usage](desktop/README.md). The app restores direct, confirmed GitHub comment-review submission; the public Pages viewer continues to use copy/export.
-
-## Windows app prototype
-
-The **Build Windows app** GitHub Actions workflow builds a portable Windows x64 test ZIP. Download its `ONVIF-Spec-Review-Windows-x64` artifact, extract the ZIP completely, and run **ONVIF Spec Review.exe**. Keep the bundled files beside the executable. Python, .NET, Git and GitHub CLI are included. Microsoft Edge WebView2 Runtime must be installed (normally already present on Windows 11). See [Windows usage](desktop/windows/READ%20ME.txt).
-
-This initial build is unsigned. Windows or organisational policy may flag or block it. Signing can be added separately. The workflow runs the shared tests, checks the packaged backend against an isolated offline fixture, and starts the actual WebView2 host to verify its message bridge. Interactive testing on Windows is still needed. No signing credentials, GitHub tokens, caches or review data are packaged.
-
-The workflow runs on pushes to `codex/windows-app` and can also be dispatched once merged into the default branch. It does not deploy Pages or publish a release. Review state is stored under `%LOCALAPPDATA%\\ONVIF Spec Review`, separately for each supported repository.
-
 ## Browser suggestions and hosted test sign-in
 
 Pages comparisons include exact proposed source ranges for eligible changes. Choose Add note → Suggest a change to draft XML/text replacements in the browser. XML is validated before saving; notes, backups, PDF and review exports preserve suggestions. Use the Open GitHub location link to paste an exported suggestion into an inline GitHub comment. The static Pages site does not submit reviews itself.
@@ -108,3 +96,7 @@ Pages comparisons include exact proposed source ranges for eligible changes. Cho
 The public demo viewer is at https://videoai.github.io/spec-review/test/. The hosted test viewer at https://spec-review-test.spec-tools.workers.dev/ adds GitHub App sign-in and confirmed review submission **only to videoai/test-specs**. The Worker refuses submission to onvif/specs. See [backend setup and session details](worker/README.md). Browser storage belongs to each website origin; use backup/import to transfer notes.
 
 The hosted repository selector switches between ONVIF comparisons and the test playground. Direct submission remains restricted to the public test repository. Test reviewers sign in with their own GitHub accounts and do not need collaborator invitations; GitHub enforces comment permissions.
+
+## Website-only distribution
+
+Mac and Windows desktop prototypes and their build workflow have been retired. Users open the website in their browser; no application installation is required. The website workflow remains responsible for checks, comparison generation, publication and hourly refreshes. The Cloudflare Worker provides GitHub sign-in and confirmed test-repository submission. The Python server and exporter remain developer/build tools.

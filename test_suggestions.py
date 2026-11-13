@@ -2,7 +2,6 @@ import json,subprocess,tempfile,unittest
 from pathlib import Path
 from unittest.mock import patch
 import server
-from desktop_workspace import Workspace
 
 class SuggestionsTests(unittest.TestCase):
     def setUp(self):
@@ -66,11 +65,5 @@ The client shall retry after 5 seconds.
         self.target();self.save()
         after=server.comparison(self.left,self.right,'Demo.xml',1)
         self.assertEqual(before,[(row['id'],row.get('reviewKey')) for row in after['rows']])
-    def test_repository_storage_isolation(self):
-        production=Workspace(self.root/'app',legacy=[]);test=Workspace(self.root/'app',repository='videoai/test-specs')
-        self.assertNotEqual(production.reviews,test.reviews);self.assertNotEqual(production.repo,test.repo);self.assertEqual(test.legacy,[])
-        test.initialize();self.assertEqual(test.git('remote','get-url','origin').decode().strip(),'https://github.com/videoai/test-specs.git')
-    def test_unapproved_repository_rejected(self):
-        with self.assertRaisesRegex(ValueError,'Unsupported'):Workspace(self.root/'app',repository='other/project')
 
 if __name__=='__main__':unittest.main()

@@ -36,7 +36,7 @@ def ensure_specs_checkout(repo):
     if github_repo().lower() not in SUPPORTED_REPOSITORIES:raise ValueError('Unsupported review repository.')
 
 REPO = default_repo()
-# Desktop storage is independent of its disposable Git cache. CLI remains compatible.
+# Optional storage overrides for development and tests.
 STATE_DIR = None
 API_CACHE_DIR = None
 def git(*args):
@@ -786,7 +786,7 @@ def source_change_spans(a,b):
     return rows
 
 def suggestion_targets(left,right,path,result=None):
-    """Resolve all eligible ranges once, for desktop requests and public snapshots."""
+    """Resolve all eligible ranges once, for local requests and public snapshots."""
     result=result if result is not None else comparison(left,right,path)
     changed=[row for row in result['rows'] if row['status']!='same']
     targets={}
