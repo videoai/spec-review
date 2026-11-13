@@ -1,6 +1,6 @@
 import {DurableObject} from 'cloudflare:workers';
 import {REPOSITORY,UPSTREAM,random,digest,seal,unseal,makeReview} from './core.mjs';
-import {github,installation,canRetry} from './github.mjs';
+import {github,canRetry} from './github.mjs';
 const SESSION='__Host-review_session',FLOW='__Host-review_flow';
 const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'};
 function json(value,status=200,extra={}){return new Response(JSON.stringify(value),{status,headers:{...headers,'Content-Type':'application/json',...extra}});}
@@ -18,16 +18,17 @@ async function snapshot(number){
 }
 function sameOrigin(request,url){if(request.headers.get('Origin')!==url.origin)throw Error('Cross-origin writes are not allowed.');}
 export default {async fetch(request,env){
- const url=new URL(request.url),path=url.pathname;
+ const url=new URL(request.url),onvif=url.pathname.startsWith('/onvif/'),path=onvif?url.pathname.slice(6):url.pathname;
+ const repository=onvif?'onvif/specs':REPOSITORY,upstreamBase=onvif?'https://videoai.github.io/spec-review/':UPSTREAM;
  try{
-  if(path==='/web-config.json')return json({auth:true,repository:REPOSITORY,configured:!!(env.GITHUB_CLIENT_ID&&env.GITHUB_CLIENT_SECRET&&env.SESSION_KEY)});
+  if(path==='/web-config.json')return json({auth:true,repository,submitAllowed:!onvif,configured:!!(env.GITHUB_CLIENT_ID&&env.GITHUB_CLIENT_SECRET&&env.SESSION_KEY)});
   if(path==='/api/web/auth'&&request.method==='GET'){
    const user=await session(request,env);return json({signedIn:!!user,login:user?.login||'',csrf:user?.csrf||'',configured:!!(env.GITHUB_CLIENT_ID&&env.GITHUB_CLIENT_SECRET&&env.SESSION_KEY)});
   }
   if(path==='/auth/login'&&request.method==='GET'){
    if(!env.GITHUB_CLIENT_ID||!env.GITHUB_CLIENT_SECRET)throw Error('GitHub App registration is not configured yet.');
    const state=random(),verifier=random(),back=url.searchParams.get('return')||'/';
-   const flow={state,verifier,back:back.startsWith('/?')?back:'/',expires:Date.now()+600000};
+   const flow={state,verifier,back:back.startsWith('/?')||back.startsWith('/onvif/?')?back:'/',expires:Date.now()+600000};
    const auth=new URL('https://github.com/login/oauth/authorize');auth.search=new URLSearchParams({client_id:env.GITHUB_CLIENT_ID,redirect_uri:url.origin+'/auth/callback',state,code_challenge:await digest(verifier),code_challenge_method:'S256',allow_signup:'false'});
    return redirect(auth.href,{'Set-Cookie':cookie(FLOW,await seal(flow,env.SESSION_KEY),600)});
   }
@@ -50,20 +51,19 @@ export default {async fetch(request,env){
     const raw=await request.text();if(raw.length>250000)throw Error('Review is too large.');const input=JSON.parse(raw);
     if(input.confirm!==true)throw Error('Confirm submission before posting.');
     if(input.repo!==REPOSITORY||!Number.isSafeInteger(input.pr)||input.pr<1)throw Error('Only videoai/test-specs submissions are allowed.');
-    const installed=await installation(user.token);
     const data=await snapshot(input.pr),body=makeReview(input,data);
     const live=await github(`repos/${REPOSITORY}/pulls/${input.pr}`,user.token);
     if(live.state!=='open'||live.head.sha!==data.pr.right||live.head.repo.full_name!==REPOSITORY)throw Error('The PR changed or closed. Check for a new published comparison before submitting.');
     const comparison=await github(`repos/${REPOSITORY}/compare/${live.base.sha}...${live.head.sha}`,user.token);
     if(comparison.merge_base_commit.sha!==data.pr.left)throw Error('The PR base changed. Check for a new published comparison.');
     const identifier=await digest(JSON.stringify([user.id,input.pr,body]));
-    return env.SUBMISSIONS.get(env.SUBMISSIONS.idFromName(identifier)).fetch(new Request('https://internal/submit',{method:'POST',body:JSON.stringify({token:user.token,number:input.pr,body,installedAt:installed.created_at})}));
+    return env.SUBMISSIONS.get(env.SUBMISSIONS.idFromName(identifier)).fetch(new Request('https://internal/submit',{method:'POST',body:JSON.stringify({token:user.token,number:input.pr,body,installedAt:null})}));
    }
    return json({error:'Unknown operation.'},404);
   }
   if(request.method!=='GET'&&request.method!=='HEAD')return json({error:'Method not allowed.'},405);
   if(!/^\/(?:|index\.html|app\.js|pages\.js|review-core\.js|site\.json|data\/pr-\d+-[a-f0-9]{16}\.json|assets\/[a-f0-9]{64}\.(?:png|jpg|gif|webp|svg))$/.test(path))return json({error:'Not found.'},404);
-  const upstream=await fetch(UPSTREAM+(path==='/'?'index.html':path.slice(1)),{redirect:'manual',cache:'no-store'});
+  const upstream=await fetch(upstreamBase+(path==='/'?'index.html':path.slice(1)),{redirect:'manual',cache:'no-store'});
   if(upstream.status>=300&&upstream.status<400)throw Error('Published viewer redirected unexpectedly.');
   const response=new Response(upstream.body,upstream);response.headers.set('Cache-Control','no-cache');response.headers.set('Referrer-Policy','no-referrer');return response;
  }catch(error){return json({error:error.message||'Request failed.'},400);}
