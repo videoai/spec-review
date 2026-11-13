@@ -802,7 +802,7 @@ def suggestion_targets(left,right,path,result=None):
         spans=[row for row in compare(aa,bb) if row['status']!='same']
     else:spans=source_change_spans(text_content(a),text_content(b))
     def ranges(context):return diff_line_ranges(git('diff','--no-ext-diff','--no-textconv','--unified='+str(context),left,right,'--',path).decode(errors='replace'))['RIGHT']
-    changed_ranges=ranges(0);hunks=ranges(3);lines=b.decode('utf-8-sig').splitlines()
+    changed_ranges=ranges(0);hunks=ranges(3);lines=(b or b'').decode('utf-8-sig').splitlines()
     for index,row in enumerate(changed):
         reason=None
         if row['status']=='removed':reason='A removed block has no proposed source lines. Add a regular note instead.'
