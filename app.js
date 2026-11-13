@@ -326,7 +326,7 @@ document.addEventListener('keydown',event=>{if(event.key==='Escape'&&more.open){
   const printKey=new URLSearchParams(location.search).get('print');
   if(printKey){toolbarObserver.disconnect();try{const snapshot=JSON.parse(sessionStorage.getItem('xml-review-print:'+printKey)||'null');if(!snapshot)throw Error('Print view expired. Return to the review and export again.');document.open();document.write(pdfHtml(snapshot.pr,snapshot.path,snapshot.rows,snapshot.notes,snapshot.draft));document.close();document.getElementById('printNow').onclick=()=>desktopBridge()?desktopBridge().postMessage({action:'print'}):window.print();document.getElementById('printBack').onclick=()=>history.back();}catch(e){document.body.textContent=e.message;const back=document.createElement('a');back.href=location.pathname;back.textContent=' Back to review';document.body.append(back);}return;}
   busy=true;clearReview();controls();
-  try{const context=await api('/api/context');if(context.desktop){window.DESKTOP_REVIEW=true;setupRepositoryPicker(context);window.DESKTOP_PREFERENCES=context.preferences||{};document.body.classList.add('desktop');document.querySelector('header p').textContent='Review changes. Keep notes. Submit to GitHub.';}if(context.static){$('fetchLatest').textContent='Check for updates';$('lastRefresh').textContent='Comparisons built: '+new Date(context.builtAt).toLocaleString();document.querySelector('header p').textContent='Review public PRs. Notes are saved in this browser; back them up to keep a copy.';}storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
+  try{const context=await api('/api/context');if(context.desktop){window.DESKTOP_REVIEW=true;setupRepositoryPicker(context);window.DESKTOP_PREFERENCES=context.preferences||{};document.body.classList.add('desktop');document.querySelector('header p').textContent='Review changes. Keep notes. Submit to GitHub.';}if(context.webAuth){window.WEB_REVIEW=true;setupWebReview();}if(context.static){$('fetchLatest').textContent='Check for updates';$('lastRefresh').textContent='Comparisons built: '+new Date(context.builtAt).toLocaleString();document.querySelector('header p').textContent='Review public PRs. Notes are saved in this browser; back them up to keep a copy.';}storageKey='xml-review-v1:'+context.id;remembered=readStored();selectedLabel=remembered.label||'';$('only').checked=!!remembered.only;$('hideReviewed').checked=!!remembered.hideReviewed;
     if(!window.REVIEW_STATIC&&remembered.lastRefresh)$('lastRefresh').textContent='Last refreshed: '+new Date(remembered.lastRefresh).toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'});
     const q=new URLSearchParams(location.search),number=q.has('pr')?q.get('pr'):remembered.pr,path=q.get('path')||remembered.path;
     const restoreKey=String(number)===String(remembered.pr)&&path===remembered.path?remembered.block:null;
@@ -358,7 +358,7 @@ $('summary').hidden=true;$('noteCount').hidden=true;$('legend').hidden=true;
 // Retain status elements for existing progress updates without a large menu.
 toolbar.append($('summary'),$('noteCount'),$('legend'));
 const oldPreview=$('previewReview').onclick;
-$('previewReview').onclick=async()=>{await oldPreview();if(window.DESKTOP_REVIEW&&preparedReview)await desktopPreview();};
+$('previewReview').onclick=async()=>{await oldPreview();if(window.DESKTOP_REVIEW&&preparedReview)await desktopPreview();else if(window.WEB_REVIEW&&preparedReview)await webPreview();};
 function renderLoginStatus(status,message){
  const url='https://github.com/login/device';
  const index=message.indexOf(url);
@@ -428,4 +428,28 @@ function appendSuggestion(root,note){
  if(!note.suggestion)return;
  const label=document.createElement('strong');label.textContent='Suggested source replacement';
  const source=document.createElement('pre');source.textContent=note.suggestion.text||'(Delete these source lines)';root.append(label,source);
+}
+
+// The hosted test viewer uses same-origin, HttpOnly sessions. GitHub tokens never enter JavaScript.
+async function setupWebReview(){
+ const bar=document.createElement('section');bar.className='repository-controls';bar.setAttribute('aria-label','Test GitHub connection');
+ const status=document.createElement('span'),signIn=document.createElement('button'),signOut=document.createElement('button');
+ signIn.textContent='Sign in with GitHub';signOut.textContent='Sign out';signOut.hidden=true;
+ bar.append(status,signIn,signOut);document.querySelector('.pr-controls').before(bar);
+ signIn.onclick=async()=>{if(await mayLeave())location.assign('/auth/login?return='+encodeURIComponent('/'+location.search));};
+ signOut.onclick=async()=>{try{await api('/api/web/logout',{});await update();}catch(e){status.textContent=e.message;}};
+ async function update(){try{const auth=await api('/api/web/auth');status.textContent=auth.signedIn?'Test repository · signed in as '+auth.login+' ':auth.configured?'Test repository · videoai/test-specs ':'Test GitHub connection is being configured. ';signIn.hidden=auth.signedIn;signIn.disabled=!auth.configured;signOut.hidden=!auth.signedIn;}catch(e){status.textContent=e.message;signIn.disabled=true;}}
+ await update();
+}
+async function webPreview(){
+ const root=$('previewContents'),box=document.createElement('section'),status=document.createElement('p');root.append(box);box.append(status);
+ const auth=await api('/api/web/auth');
+ if(!auth.signedIn){status.textContent=auth.configured?'Sign in with GitHub above to submit this test review. Your saved notes will remain in this browser.':'The test GitHub App registration is not configured yet.';return;}
+ const payload={repo:'videoai/test-specs',pr:preparedReview.pr,left:preparedReview.left,right:preparedReview.right,summary:ReviewCore.normalizeDraft(reviewDraft).summary.text||'',notes:overview.documents.flatMap(doc=>(doc.changes||[]).filter(row=>row.note?.text?.trim()||row.note?.suggestion).map(row=>({path:doc.path,review:doc.review,block:row.id,text:row.note.text||'',suggestion:row.note.suggestion||null}))),confirm:true};
+ if(preparedReview.repo!=='videoai/test-specs'||preparedReview.incomplete.length){status.textContent='Only complete reviews of videoai/test-specs can be submitted here.';return;}
+ const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';label.style.cssText='display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0';check.style.width='auto';label.append(check,document.createTextNode('Submit comments as '+auth.login+' to videoai/test-specs PR #'+payload.pr));
+ const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit review to GitHub';submit.disabled=true;check.onchange=()=>submit.disabled=!check.checked;
+ status.textContent='Submits comments and suggestions only. Notes without a reliable source line are included in the overall summary.';
+ submit.onclick=async()=>{submit.disabled=true;check.disabled=true;$('closePreview').disabled=true;status.textContent='Submitting test review…';try{const result=await api('/api/web/submit',payload);status.textContent='Review submitted. ';const link=document.createElement('a');link.href=result.url;link.target='_blank';link.rel='noreferrer';link.textContent='View on GitHub';status.append(link);}catch(e){status.textContent=e.message;}finally{$('closePreview').disabled=false;}};
+ box.append(label,submit);
 }

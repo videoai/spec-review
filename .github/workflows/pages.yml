@@ -52,6 +52,11 @@ jobs:
           python3 -m unittest -q
           node test_frontend.cjs
           node test_static_frontend.cjs
+      - name: Test hosted review backend
+        working-directory: worker
+        run: |
+          npm ci --ignore-scripts
+          npm test
       - name: Build public PR comparisons
         env:
           GH_TOKEN: ${{ github.token }}

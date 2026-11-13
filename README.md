@@ -100,3 +100,9 @@ The **Build Windows app** GitHub Actions workflow builds a portable Windows x64 
 This initial build is unsigned. Windows or organisational policy may flag or block it. Signing can be added separately. The workflow runs the shared tests, checks the packaged backend against an isolated offline fixture, and starts the actual WebView2 host to verify its message bridge. Interactive testing on Windows is still needed. No signing credentials, GitHub tokens, caches or review data are packaged.
 
 The workflow runs on pushes to `codex/windows-app` and can also be dispatched once merged into the default branch. It does not deploy Pages or publish a release. Review state is stored under `%LOCALAPPDATA%\\ONVIF Spec Review`, separately for each supported repository.
+
+## Browser suggestions and hosted test sign-in
+
+Pages comparisons include exact proposed source ranges for eligible changes. Choose Add note → Suggest a change to draft XML/text replacements in the browser. XML is validated before saving; notes, backups, PDF and review exports preserve suggestions. Use the Open GitHub location link to paste an exported suggestion into an inline GitHub comment. The static Pages site does not submit reviews itself.
+
+The public demo viewer is at https://videoai.github.io/spec-review/test/. The hosted test viewer at https://spec-review-test.kieronmesser.workers.dev/ adds GitHub App sign-in and confirmed review submission **only to videoai/test-specs**. The Worker refuses submission to onvif/specs. See [backend setup and session details](worker/README.md). Browser storage belongs to each website origin; use backup/import to transfer notes.

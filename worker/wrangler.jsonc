@@ -1,0 +1,10 @@
+{
+  "name": "spec-review-test",
+  "main": "index.mjs",
+  "compatibility_date": "2026-11-13",
+  "account_id": "8aa6c27987cee59c4254abf722d2c64a",
+  "workers_dev": true,
+  "observability": {"enabled": false},
+  "durable_objects": {"bindings": [{"name": "SUBMISSIONS", "class_name": "Submission"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["Submission"]}]
+}

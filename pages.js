@@ -1,7 +1,7 @@
 /* Static Pages adapter: comparisons are public build artifacts; drafts stay in IndexedDB. */
 window.REVIEW_STATIC=true;
 (()=>{
-  let manifest=null;const bundles=new Map();let database;
+  let webCsrf='';let manifest=null;const bundles=new Map();let database;
   async function loadManifest(force=false){
     if(!manifest||force){const response=await fetch('./site.json',{cache:'no-store'});if(!response.ok)throw Error('Published comparison index is unavailable. Try again after the build finishes.');const next=await response.json();if(next.format!=='onvif-spec-review-site'||next.version!==1)throw Error('Unsupported comparison site.');if(manifest?.builtAt!==next.builtAt)bundles.clear();manifest=next;}
     return manifest;
@@ -49,7 +49,15 @@ window.REVIEW_STATIC=true;
   }
   window.reviewBackend=async(url,payload)=>{
     const request=new URL(url,location.href),q=request.searchParams,route=request.pathname,pr=payload?.pr||q.get('pr'),site=await loadManifest();
-    if(route==='/api/context')return {id:'pages:'+site.repository,repo:site.repository,static:true,builtAt:site.builtAt};
+    if(route==='/api/context'){
+      const response=await fetch('./web-config.json',{cache:'no-store'}),config=response.ok?await response.json():{};
+      return {id:'pages:'+site.repository,repo:site.repository,static:true,builtAt:site.builtAt,webAuth:config.auth===true&&site.repository==='videoai/test-specs'};
+    }
+    if(route.startsWith('/api/web/')){
+      if(site.repository!=='videoai/test-specs')throw Error('Website submission is restricted to videoai/test-specs.');
+      const response=await fetch(route,{method:payload?'POST':'GET',credentials:'same-origin',headers:payload?{'Content-Type':'application/json','X-Review-CSRF':webCsrf}:{},body:payload?JSON.stringify(payload):undefined,cache:'no-store'}),value=await response.json();
+      if(!response.ok)throw Error(value.error||'Request failed.');if(route==='/api/web/auth')webCsrf=value.csrf||'';return value;
+    }
     if(route==='/api/fetch'){await loadManifest(true);return {fetched:true};}
     if(route==='/api/prs')return {repo:site.repository,prs:manifest.prs,github:{}};
     if(route==='/api/pr')return (await bundle(q.get('number'))).pr;
