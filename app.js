@@ -450,17 +450,16 @@ async function setupWebReview(){
  await update();
 }
 async function webPreview(){
- const root=$('previewContents'),box=document.createElement('section'),status=document.createElement('p');root.append(box);box.append(status);
+ const root=$('previewContents');$('webReviewActions')?.remove();const box=document.createElement('section'),status=document.createElement('p');box.id='webReviewActions';box.className='web-review-actions';root.before(box);status.setAttribute('role','status');status.hidden=true;box.append(status);
  const auth=await api('/api/web/auth');
  if(!auth.signedIn){
-  status.textContent=auth.configured?'Sign in to submit this review. Your saved notes stay in this browser.':'The test GitHub App registration is not configured yet.';
+  status.hidden=false;status.textContent=auth.configured?'Sign in to submit this review. Your saved notes stay in this browser.':'The test GitHub App registration is not configured yet.';
   const signIn=document.createElement('button');signIn.className='primary';signIn.textContent='Sign in with GitHub';signIn.disabled=!auth.configured;signIn.onclick=()=>webSignIn(true);box.append(signIn);return;
  }
  const payload={repo:'videoai/test-specs',pr:preparedReview.pr,left:preparedReview.left,right:preparedReview.right,summary:ReviewCore.normalizeDraft(reviewDraft).summary.text||'',notes:overview.documents.flatMap(doc=>(doc.changes||[]).filter(row=>row.note?.text?.trim()||row.note?.suggestion).map(row=>({path:doc.path,review:doc.review,block:row.id,text:row.note.text||'',suggestion:row.note.suggestion||null}))),confirm:true};
- if(preparedReview.repo!=='videoai/test-specs'||preparedReview.incomplete.length){status.textContent='Only complete reviews of videoai/test-specs can be submitted here.';return;}
+ if(preparedReview.repo!=='videoai/test-specs'||preparedReview.incomplete.length){status.hidden=false;status.textContent='Only complete reviews of videoai/test-specs can be submitted here.';return;}
  const label=document.createElement('label'),check=document.createElement('input');check.type='checkbox';label.style.cssText='display:flex;align-items:center;gap:8px;text-transform:none;letter-spacing:0';check.style.width='auto';label.append(check,document.createTextNode('Submit comments as '+auth.login+' to videoai/test-specs PR #'+payload.pr));
  const submit=document.createElement('button');submit.className='primary';submit.textContent='Submit review to GitHub';submit.disabled=true;check.onchange=()=>submit.disabled=!check.checked;
- status.textContent='Submits comments and suggestions only. Notes without a reliable source line are included in the overall summary.';
- submit.onclick=async()=>{submit.disabled=true;check.disabled=true;$('closePreview').disabled=true;status.textContent='Submitting test review…';try{const result=await api('/api/web/submit',payload);status.textContent='Review submitted. ';const link=document.createElement('a');link.href=result.url;link.target='_blank';link.rel='noreferrer';link.textContent='View on GitHub';status.append(link);}catch(e){status.textContent=e.message;}finally{$('closePreview').disabled=false;}};
+ submit.onclick=async()=>{submit.disabled=true;check.disabled=true;$('closePreview').disabled=true;status.hidden=false;status.textContent='Submitting test review…';try{const result=await api('/api/web/submit',payload);status.textContent='Review submitted. ';const link=document.createElement('a');link.href=result.url;link.target='_blank';link.rel='noreferrer';link.textContent='View on GitHub';status.append(link);}catch(e){status.textContent=e.message;}finally{$('closePreview').disabled=false;}};
  box.append(label,submit);
 }
