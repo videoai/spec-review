@@ -1,5 +1,6 @@
 import {DurableObject} from 'cloudflare:workers';
 import {REPOSITORY,UPSTREAM,random,digest,seal,unseal,makeReview} from './core.mjs';
+import {github,installation,canRetry} from './github.mjs';
 const SESSION='__Host-review_session',FLOW='__Host-review_flow';
 const headers={'Cache-Control':'no-store','X-Content-Type-Options':'nosniff','Referrer-Policy':'no-referrer'};
 function json(value,status=200,extra={}){return new Response(JSON.stringify(value),{status,headers:{...headers,'Content-Type':'application/json',...extra}});}
@@ -7,11 +8,6 @@ function cookie(name,value,age){return `${name}=${value}; HttpOnly; Secure; Same
 function cookies(request){return Object.fromEntries((request.headers.get('Cookie')||'').split(';').map(part=>part.trim().split('=')));}
 function redirect(url,extra={}){return new Response(null,{status:302,headers:{...headers,Location:url,...extra}});}
 async function session(request,env){return unseal(cookies(request)[SESSION],env.SESSION_KEY);}
-async function github(path,token,options={}){
- const response=await fetch('https://api.github.com/'+path,{...options,redirect:'manual',headers:{'User-Agent':'ONVIF-Spec-Review-test','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',Authorization:'Bearer '+token,...options.headers}});
- if(!response.ok)throw Error('GitHub returned '+response.status+'. Check your app installation, PR access and pending reviews on GitHub.');
- return response.status===204?{}:response.json();
-}
 async function snapshot(number){
  const index=await fetch(UPSTREAM+'site.json',{cache:'no-store',redirect:'manual'});if(!index.ok)throw Error('Published test comparisons are unavailable.');const manifest=await index.json();
  if(manifest.repository!==REPOSITORY)throw Error('Invalid published test repository.');
@@ -54,13 +50,14 @@ export default {async fetch(request,env){
     const raw=await request.text();if(raw.length>250000)throw Error('Review is too large.');const input=JSON.parse(raw);
     if(input.confirm!==true)throw Error('Confirm submission before posting.');
     if(input.repo!==REPOSITORY||!Number.isSafeInteger(input.pr)||input.pr<1)throw Error('Only videoai/test-specs submissions are allowed.');
+    const installed=await installation(user.token);
     const data=await snapshot(input.pr),body=makeReview(input,data);
     const live=await github(`repos/${REPOSITORY}/pulls/${input.pr}`,user.token);
     if(live.state!=='open'||live.head.sha!==data.pr.right||live.head.repo.full_name!==REPOSITORY)throw Error('The PR changed or closed. Check for a new published comparison before submitting.');
     const comparison=await github(`repos/${REPOSITORY}/compare/${live.base.sha}...${live.head.sha}`,user.token);
     if(comparison.merge_base_commit.sha!==data.pr.left)throw Error('The PR base changed. Check for a new published comparison.');
     const identifier=await digest(JSON.stringify([user.id,input.pr,body]));
-    return env.SUBMISSIONS.get(env.SUBMISSIONS.idFromName(identifier)).fetch(new Request('https://internal/submit',{method:'POST',body:JSON.stringify({token:user.token,number:input.pr,body})}));
+    return env.SUBMISSIONS.get(env.SUBMISSIONS.idFromName(identifier)).fetch(new Request('https://internal/submit',{method:'POST',body:JSON.stringify({token:user.token,number:input.pr,body,installedAt:installed.created_at})}));
    }
    return json({error:'Unknown operation.'},404);
   }
@@ -75,16 +72,19 @@ export default {async fetch(request,env){
 export class Submission extends DurableObject {
  async fetch(request){
   return this.ctx.blockConcurrencyWhile(async()=>{
+   const {token,number,body,installedAt}=await request.json();
    const prior=await this.ctx.storage.get('attempt');
    if(prior?.result)return json(prior.result);
-   if(prior)return json({error:'This review was already attempted. Check the PR on GitHub before trying another review; automatic retry is disabled.'},409);
-   const {token,number,body}=await request.json();
+   if(prior&&!canRetry(prior,installedAt))return json({error:'This review was already attempted. Check the PR on GitHub before trying another review; automatic retry is disabled.'},409);
    // Durable journal records no tokens or note text. A single atomic review request creates all threads.
-   await this.ctx.storage.put('attempt',{time:Date.now()});await this.ctx.storage.setAlarm(Date.now()+30*86400000);
+   const time=Date.now();await this.ctx.storage.put('attempt',{time,status:'started'});await this.ctx.storage.setAlarm(Date.now()+30*86400000);
    try{
     const created=await github(`repos/${REPOSITORY}/pulls/${number}/reviews`,token,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const result={url:created.html_url,id:created.id};await this.ctx.storage.put('attempt',{result});return json(result);
-   }catch{return json({error:'Submission was not confirmed. Check the PR on GitHub before retrying. No automatic retry was made.'},409);}
+   }catch(error){
+    if(error.rejected){await this.ctx.storage.put('attempt',{time,status:'rejected',rejected:true,httpStatus:error.status});return json({error:error.message+' No review was posted. Fix the reported issue, then reopen Finish review to try again.'},400);}
+    return json({error:'Submission was not confirmed. Check the PR on GitHub before retrying. No automatic retry was made.'},409);
+   }
   });
  }
  async alarm(){await this.ctx.storage.deleteAll();}
