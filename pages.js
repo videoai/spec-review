@@ -54,6 +54,11 @@ window.REVIEW_STATIC=true;
     if(route==='/api/prs')return {repo:site.repository,prs:manifest.prs,github:{}};
     if(route==='/api/pr')return (await bundle(q.get('number'))).pr;
     if(route==='/api/feedback')return feedback(pr,q.get('refresh')==='1');
+    if(route==='/api/suggestion'){
+      const data=await bundle(pr),doc=data.comparisons[q.get('path')];
+      if(q.get('left')!==data.pr.left||q.get('right')!==data.pr.right)throw Error('The published comparison changed. Reopen the note.');
+      return doc?.suggestions?.[q.get('block')]||{available:false,reason:'Source ranges are not in this published build. Check for updates.'};
+    }
     const saved=await state(pr);
     if(route==='/api/reset-status')return {canUndo:!!saved.undo};
     if(route==='/api/draft'&&!payload)return saved.draft;
@@ -71,7 +76,16 @@ window.REVIEW_STATIC=true;
       const value=await state(pr,value=>{if(route==='/api/undo-reset'){if(!value.undo)throw Error('No reset or import to undo.');Object.assign(value,value.undo,{undo:null});}else{value.undo=ReviewCore.clone({notes:value.notes,draft:value.draft,reviewed:value.reviewed});Object.assign(value,{notes:{},draft:{summary:{},files:{}},reviewed:{}});}});return {saved:true,canUndo:!!value.undo};
     }
     if(route==='/api/reviewed'){await state(pr,value=>{if(payload.reviewed)value.reviewed[payload.key]=true;else delete value.reviewed[payload.key];});return {saved:true};}
-    if(route==='/api/notes'){await state(pr,value=>{const blocks=value.notes[payload.review]||{};if(payload.text.trim())blocks[payload.block]={text:payload.text,path:payload.path,context:payload.context,pr:String(pr),versions:payload.versions,updated:new Date().toISOString()};else delete blocks[payload.block];value.notes[payload.review]=blocks;});return {saved:true};}
+    if(route==='/api/notes'){
+      if(typeof payload.text!=='string'||payload.text.length>20000)throw Error('Invalid review note.');
+      const data=await bundle(pr),doc=data.comparisons[payload.path];
+      if(!doc||doc.review!==payload.review||!doc.rows.some(row=>row.id===payload.block&&row.status!=='same')||payload.versions?.right!==data.pr.right||payload.versions?.left!==data.pr.left)throw Error('The published comparison changed. Reopen this note.');
+      const suggestion=payload.suggestion?ReviewCore.validateSuggestion(payload.suggestion,doc.suggestions?.[payload.block],doc.suggestionSource,xml=>{
+        const parsed=new DOMParser().parseFromString(xml,'application/xml');return parsed.getElementsByTagName('parsererror')[0]?.textContent||'';
+      }):null;
+      const note={text:payload.text,path:payload.path,context:payload.context,pr:String(pr),versions:payload.versions,updated:new Date().toISOString(),...(suggestion?{suggestion}:{})};
+      await state(pr,value=>{const blocks=value.notes[payload.review]||{};if(payload.text.trim()||suggestion)blocks[payload.block]=note;else delete blocks[payload.block];value.notes[payload.review]=blocks;});return {saved:true,note};
+    }
     if(route==='/api/draft'){if(payload.scope!=='summary')throw Error('Use the PR summary for overall or file-wide feedback.');const value=await state(pr,value=>{const record={text:payload.text,versions:payload.versions,updated:new Date().toISOString()};value.draft={summary:payload.text.trim()?record:{},files:{}};});return {saved:true,draft:value.draft};}
     throw Error('Unsupported static review operation.');
   };

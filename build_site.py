@@ -43,7 +43,7 @@ def build_site(output,prs):
     # Static data is sanitized and scripts are loaded only from this origin.
     policy="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'self'; form-action 'none'"
     markup=markup.replace('<meta charset="utf-8">','<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="'+policy+'">')
-    (output/'index.html').write_text(markup);(output/'.nojekyll').write_text('')
+    (output/'index.html').write_text(markup);(output/'.nojekyll').write_text('');(output/'web-config.json').write_text(json.dumps({'auth':False}))
     def asset(match):
         url=server.html.unescape(match.group(0));query=parse_qs(urlparse(url).query)
         data=server.git('cat-file','blob',query['blob'][0]) if 'blob' in query else server.source(query['ref'][0],query['path'][0])
@@ -67,6 +67,9 @@ def build_site(output,prs):
                     doc={'path':path,'mode':result['mode'],'changes':changes}
                     anchors=server.chunk_anchors(pr['left'],pr['right'],doc)
                     for row,anchor in zip(changes,anchors):row['anchor']=anchor
+                    result['suggestions']=server.suggestion_targets(pr['left'],pr['right'],path,result)
+                    if path.lower().endswith('.xml') and any(target.get('available') for target in result['suggestions'].values()):
+                        result['suggestionSource']=server.source(pr['right'],path).decode('utf-8-sig')
                     for row in result['rows']:
                         row['reviewed']=False
                         for side in ('left','right'):row[side]=re.sub(r'/api/asset\?[^\s\"<>]+',asset,row[side])
@@ -86,7 +89,7 @@ def build_site(output,prs):
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--repo',type=Path,default=server.REPO);p.add_argument('--output',type=Path,required=True);p.add_argument('--pr',type=int,action='append');p.add_argument('--fetch',action='store_true');args=p.parse_args();server.REPO=args.repo.resolve()
-    if server.github_repo().lower()!=server.TARGET_REPOSITORY:raise ValueError('This viewer currently supports only onvif/specs.')
+    if server.github_repo().lower() not in server.SUPPORTED_REPOSITORIES:raise ValueError('Unsupported public review repository.')
     metadata=server.github_api('repos/'+server.github_repo(),force=True)
     if metadata.get('private') is not False or getattr(server.API_INFO,'value',{}).get('stale'):raise ValueError('Static publication requires a verified public GitHub repository.')
     if args.fetch:server.git('fetch','--no-tags','origin','+refs/heads/*:refs/remotes/origin/*')

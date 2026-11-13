@@ -120,14 +120,14 @@ function attachActions(el,row) {
     cancel.onclick=async()=>{const edited=[...area.querySelectorAll('textarea')].some(field=>field.value!==field.defaultValue)||area.dataset.suggestionChanged==='true';if(!edited||await askDiscard())view();};
     let suggested=null;
     const suggestionPanel=document.createElement('div');suggestionPanel.className='suggestion-editor';
-    const suggest=document.createElement('button');suggest.type='button';suggest.textContent=notes[row.id]?.suggestion?'Edit suggested change':'Suggest a change…';suggest.hidden=!!window.REVIEW_STATIC;
+    const suggest=document.createElement('button');suggest.type='button';suggest.textContent=notes[row.id]?.suggestion?'Edit suggested change':'Suggest a change…';
     async function showSuggestion(replacement){
       suggest.disabled=true;save.disabled=true;status.textContent='Finding source lines…';
       try{
         const target=await api('/api/suggestion?'+new URLSearchParams({pr:activePr.number,left:activePr.left,right:activePr.right,path:reviewPath,block:row.id}));
         if(!area.contains(suggestionPanel))return;
         if(!target.available){status.textContent=target.reason;suggest.disabled=false;return;}
-        const help=document.createElement('p');help.textContent='Suggested replacement · '+reviewPath+' · proposed lines '+target.startLine+'–'+target.line+'. Edit the source markup below; the PR author can apply it on GitHub.';
+        const help=document.createElement('p');help.textContent='Suggested replacement · '+reviewPath+' · proposed lines '+target.startLine+'–'+target.line+'. Edit the source markup below; '+(window.REVIEW_STATIC?'copy the suggestion into a GitHub inline comment when finishing your review.':'the PR author can apply it on GitHub.');
         const source=document.createElement('textarea');source.setAttribute('aria-label','Suggested source replacement');source.maxLength=20000;source.defaultValue=replacement??target.original;source.value=source.defaultValue;
         const remove=document.createElement('button');remove.type='button';remove.textContent='Remove suggestion';remove.onclick=()=>{suggested=null;suggestionPanel.replaceChildren();suggest.disabled=false;area.dataset.suggestionChanged='true';};
         suggested={input:source,target};suggestionPanel.replaceChildren(help,source,remove);area.dataset.suggestionChanged=notes[row.id]?.suggestion&&replacement===notes[row.id].suggestion.text?'false':'true';status.textContent='';source.focus();

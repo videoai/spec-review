@@ -785,32 +785,44 @@ def source_change_spans(a,b):
             if op!='equal':rows.append(row)
     return rows
 
-def suggestion_target(data):
-    left=data.get('left','');right=data.get('right','');path=data.get('path','');block=data.get('block','')
-    if not all(isinstance(sha,str) and re.fullmatch('[a-f0-9]{40,64}',sha) for sha in (left,right)):raise ValueError('Select a committed PR comparison first')
-    result=comparison(left,right,path,data.get('pr'))
+def suggestion_targets(left,right,path,result=None):
+    """Resolve all eligible ranges once, for desktop requests and public snapshots."""
+    result=result if result is not None else comparison(left,right,path)
     changed=[row for row in result['rows'] if row['status']!='same']
-    index=next((i for i,row in enumerate(changed) if row['id']==block),None)
+    targets={}
     def unavailable(reason):return {'available':False,'reason':reason}
-    if index is None:return unavailable('This change is no longer in the current comparison.')
-    if changed[index]['status']=='removed':return unavailable('A removed block has no proposed source lines. Add a regular note instead.')
-    if result['mode'] not in ('docbook','source'):return unavailable('Suggestions are available for XML and text source changes.')
+    if result['mode'] not in ('docbook','source'):
+        return {row['id']:unavailable('Suggestions are available for XML and text source changes.') for row in changed}
     names=git('diff','--name-status','-z','-M',left,right).decode().split('\0')
-    if any(re.fullmatch('R[0-9]+',value) and path in names[i+1:i+3] for i,value in enumerate(names)):return unavailable('Renamed files require a regular review note.')
+    if any(re.fullmatch('R[0-9]+',value) and path in names[i+1:i+3] for i,value in enumerate(names)):
+        return {row['id']:unavailable('Renamed files require a regular review note.') for row in changed}
     a,b=file_bytes(left,path),file_bytes(right,path)
     if result['mode']=='docbook':
         aa=rich_blocks(a,left,path,locations=True)[1];bb=rich_blocks(b,right,path,locations=True)[1]
         spans=[row for row in compare(aa,bb) if row['status']!='same']
     else:spans=source_change_spans(text_content(a),text_content(b))
-    if len(spans)!=len(changed) or not spans[index].get('sourceRight'):return unavailable('No reliable proposed source range for this rendered change.')
-    start,end=spans[index]['sourceRight']
-    if end-start>=60:return unavailable('This block is too large for a suggestion. Add a regular note instead.')
     def ranges(context):return diff_line_ranges(git('diff','--no-ext-diff','--no-textconv','--unified='+str(context),left,right,'--',path).decode(errors='replace'))['RIGHT']
-    if not any(max(start,first)<=min(end,last) for first,last in ranges(0)):return unavailable('This is a rendered-only change, such as automatic numbering. It has no changed source lines.')
-    if not any(first<=start<=end<=last for first,last in ranges(3)):return unavailable('The complete source block extends outside the GitHub diff. Use a regular note for this change.')
-    lines=b.decode('utf-8-sig').splitlines();original='\n'.join(lines[start-1:end])
-    if len(original)>20000:return unavailable('This source block is too large for a suggestion.')
-    return {'available':True,'review':result['review'],'block':block,'right':right,'startLine':start,'line':end,'original':original,'path':path}
+    changed_ranges=ranges(0);hunks=ranges(3);lines=b.decode('utf-8-sig').splitlines()
+    for index,row in enumerate(changed):
+        reason=None
+        if row['status']=='removed':reason='A removed block has no proposed source lines. Add a regular note instead.'
+        elif len(spans)!=len(changed) or not spans[index].get('sourceRight'):reason='No reliable proposed source range for this rendered change.'
+        else:
+            start,end=spans[index]['sourceRight']
+            if end-start>=60:reason='This block is too large for a suggestion. Add a regular note instead.'
+            elif not any(max(start,first)<=min(end,last) for first,last in changed_ranges):reason='This is a rendered-only change, such as automatic numbering. It has no changed source lines.'
+            elif not any(first<=start<=end<=last for first,last in hunks):reason='The complete source block extends outside the GitHub diff. Use a regular note for this change.'
+            else:
+                original='\n'.join(lines[start-1:end])
+                if len(original)>20000:reason='This source block is too large for a suggestion.'
+                else:targets[row['id']]={'available':True,'review':result['review'],'block':row['id'],'right':right,'startLine':start,'line':end,'original':original,'path':path}
+        if reason:targets[row['id']]=unavailable(reason)
+    return targets
+
+def suggestion_target(data):
+    left=data.get('left','');right=data.get('right','');path=data.get('path','');block=data.get('block','')
+    if not all(isinstance(sha,str) and re.fullmatch('[a-f0-9]{40,64}',sha) for sha in (left,right)):raise ValueError('Select a committed PR comparison first')
+    return suggestion_targets(left,right,path,comparison(left,right,path,data.get('pr'))).get(block,{'available':False,'reason':'This change is no longer in the current comparison.'})
 
 def validated_suggestion(data,value):
     if not isinstance(value,dict) or not isinstance(value.get('text'),str) or len(value['text'])>20000:raise ValueError('Invalid suggested source replacement')

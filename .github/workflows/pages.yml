@@ -32,6 +32,14 @@ jobs:
           path: _source
           fetch-depth: 0
           persist-credentials: false
+      - name: Checkout public review playground as data
+        uses: actions/checkout@v6
+        with:
+          repository: videoai/test-specs
+          ref: main
+          path: _test_source
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
@@ -48,7 +56,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PYTHONDONTWRITEBYTECODE: '1'
-        run: python3 build_site.py --repo _source --fetch --output _site
+        run: |
+          python3 build_site.py --repo _source --fetch --output _site
+          python3 build_site.py --repo _test_source --fetch --output _site/test
       - name: Upload downloadable preview
         uses: actions/upload-artifact@v4
         with:

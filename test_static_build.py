@@ -27,6 +27,9 @@ class StaticBuildTests(unittest.TestCase):
             manifest=json.loads((out/'site.json').read_text());payload=json.loads((out/manifest['prs'][0]['data']).read_text());doc=payload['comparisons']['A.xml']
             self.assertEqual(doc['review'],comparison['review']);self.assertEqual([row['id'] for row in doc['rows']],[row['id'] for row in comparison['rows']])
             self.assertFalse(any(row['reviewed'] for row in doc['rows']))
+            self.assertEqual(set(doc['suggestions']),{row['id'] for row in doc['rows'] if row['status']!='same'})
+            self.assertTrue(any(target['available'] for target in doc['suggestions'].values()))
+            self.assertIn('<book>',doc['suggestionSource'])
             public=''.join(file.read_text(errors='replace') for file in (out/'data').iterdir())
             self.assertNotIn('PRIVATE REVIEW',public);self.assertNotIn('PRIVATE SUMMARY',public)
             self.assertIn('./assets/',doc['rows'][-1]['right']);self.assertNotIn('/api/asset',doc['rows'][-1]['right'])
