@@ -2,7 +2,7 @@
 
 This Cloudflare Worker serves the public `videoai/test-specs` viewer from the GitHub Pages `/test/` build, with same-origin GitHub App sign-in and confirmed comment-review submission. It refuses writes to every other repository, including `onvif/specs`. The main ONVIF Pages viewer stays static.
 
-The initial URL is https://spec-review-test.kieronmesser.workers.dev/. The viewer and API share this origin, so sign-in does not rely on third-party cookies. Notes in this viewer belong to its browser origin; use backup/import to move notes from Pages or the desktop app.
+The initial URL is https://spec-review-test.spec-tools.workers.dev/. The viewer and API share this origin, so sign-in does not rely on third-party cookies. Notes in this viewer belong to its browser origin; use backup/import to move notes from Pages or the desktop app.
 
 ## Deploy
 
@@ -12,7 +12,7 @@ Set three Worker secrets: `SESSION_KEY` (a random value of at least 32 character
 
 For the initial videoai registration, `python3 register_app.py` runs a loopback setup page at http://127.0.0.1:8977. It posts a GitHub App manifest, validates the returned owner/permissions, and transfers the generated client credentials directly into Cloudflare secrets using Wrangler. The temporary secret file is deleted. No app private key is retained. Close the helper after registration.
 
-The GitHub App must have **Pull requests: read/write**, **Contents: read**, and automatic Metadata read. Its OAuth callback is `https://spec-review-test.kieronmesser.workers.dev/auth/callback`. Webhooks are disabled. Install it only on **videoai/test-specs**, then sign in from the test viewer. The app uses user access tokens, so reviews are attributed to the signed-in user.
+The GitHub App must have **Pull requests: read/write**, **Contents: read**, and automatic Metadata read. Its OAuth callback is `https://spec-review-test.spec-tools.workers.dev/auth/callback`. Webhooks are disabled. Install it only on **videoai/test-specs**, then sign in from the test viewer. The app uses user access tokens, so reviews are attributed to the signed-in user.
 
 ## Sessions and submission
 

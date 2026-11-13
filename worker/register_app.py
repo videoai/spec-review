@@ -6,7 +6,7 @@ from pathlib import Path
 from urllib.parse import parse_qs,urlparse
 ROOT=Path(__file__).resolve().parent
 HOST='http://127.0.0.1:8977'
-WORKER='https://spec-review-test.kieronmesser.workers.dev'
+WORKER='https://spec-review-test.spec-tools.workers.dev'
 STATE=secrets.token_urlsafe(32)
 MANIFEST={'name':'VideoAI Spec Review Test','url':WORKER,'redirect_url':HOST+'/callback','callback_urls':[WORKER+'/auth/callback'],'hook_attributes':{'url':WORKER+'/github/webhook','active':False},'public':False,'default_permissions':{'pull_requests':'write','contents':'read'},'default_events':[],'setup_url':WORKER,'request_oauth_on_install':False}
 DONE=False
