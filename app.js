@@ -361,7 +361,7 @@ $('summary').hidden=true;$('noteCount').hidden=true;$('legend').hidden=true;
 // Retain status elements for existing progress updates without a large menu.
 toolbar.append($('summary'),$('noteCount'),$('legend'));
 const oldPreview=$('previewReview').onclick;
-$('previewReview').onclick=async()=>{await oldPreview();if(window.DESKTOP_REVIEW&&preparedReview)await desktopPreview();else if(window.WEB_REVIEW&&preparedReview)await webPreview();};
+$('previewReview').onclick=async()=>{$('webReviewActions')?.remove();await oldPreview();if(window.DESKTOP_REVIEW&&preparedReview)await desktopPreview();else if(window.WEB_REVIEW&&preparedReview)await webPreview();};
 function renderLoginStatus(status,message){
  const url='https://github.com/login/device';
  const index=message.indexOf(url);
