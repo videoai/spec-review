@@ -440,21 +440,16 @@ async function webSignIn(finish=false){
 }
 
 async function setupWebReview(){
- const bar=document.createElement('section');bar.className='repository-controls';bar.setAttribute('aria-label','Test GitHub connection');
- const status=document.createElement('span'),signIn=document.createElement('button'),signOut=document.createElement('button');
- signIn.textContent='Sign in with GitHub';signOut.textContent='Sign out';signOut.hidden=true;
- bar.append(status,signIn,signOut);document.querySelector('.pr-controls').before(bar);
- signIn.onclick=()=>webSignIn();
- signOut.onclick=async()=>{try{await api('/api/web/logout',{});await update();}catch(e){status.textContent=e.message;}};
- async function update(){try{const auth=await api('/api/web/auth');status.textContent=auth.signedIn?'Test repository · signed in as '+auth.login+' ':auth.configured?'Test repository · videoai/test-specs ':'Test GitHub connection is being configured. ';signIn.hidden=auth.signedIn;signIn.disabled=!auth.configured;signOut.hidden=!auth.signedIn;}catch(e){status.textContent=e.message;signIn.disabled=true;}}
- await update();
+ const signOut=document.createElement('button');signOut.id='webSignOut';signOut.textContent='Sign out of GitHub';signOut.hidden=true;document.querySelector('.toolbar-menu').append(signOut);
+ signOut.onclick=async()=>{more.open=false;try{await api('/api/web/logout',{});signOut.hidden=true;$('fetchInfo').textContent='Signed out of GitHub.';}catch(e){$('error').textContent=e.message;}};
+ try{signOut.hidden=!(await api('/api/web/auth')).signedIn;}catch(e){$('error').textContent=e.message;}
 }
 async function webPreview(){
  const root=$('previewContents');$('webReviewActions')?.remove();const box=document.createElement('section'),status=document.createElement('p');box.id='webReviewActions';box.className='web-review-actions';root.before(box);status.setAttribute('role','status');status.hidden=true;box.append(status);
- const auth=await api('/api/web/auth');
+ const auth=await api('/api/web/auth');if($('webSignOut'))$('webSignOut').hidden=!auth.signedIn;
  if(!auth.signedIn){
-  status.hidden=false;status.textContent=auth.configured?'Sign in to submit this review. Your saved notes stay in this browser.':'The test GitHub App registration is not configured yet.';
-  const signIn=document.createElement('button');signIn.className='primary';signIn.textContent='Sign in with GitHub';signIn.disabled=!auth.configured;signIn.onclick=()=>webSignIn(true);box.append(signIn);return;
+  if(!auth.configured){status.hidden=false;status.textContent='The test GitHub App registration is not configured yet.';}
+  const signIn=document.createElement('button');signIn.className='primary';signIn.textContent='Login to GitHub';signIn.disabled=!auth.configured;signIn.onclick=()=>webSignIn(true);box.append(signIn);return;
  }
  const payload={repo:'videoai/test-specs',pr:preparedReview.pr,left:preparedReview.left,right:preparedReview.right,summary:ReviewCore.normalizeDraft(reviewDraft).summary.text||'',notes:overview.documents.flatMap(doc=>(doc.changes||[]).filter(row=>row.note?.text?.trim()||row.note?.suggestion).map(row=>({path:doc.path,review:doc.review,block:row.id,text:row.note.text||'',suggestion:row.note.suggestion||null}))),confirm:true};
  if(preparedReview.repo!=='videoai/test-specs'||preparedReview.incomplete.length){status.hidden=false;status.textContent='Only complete reviews of videoai/test-specs can be submitted here.';return;}
