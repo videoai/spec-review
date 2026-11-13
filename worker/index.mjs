@@ -8,16 +8,16 @@ function cookies(request){return Object.fromEntries((request.headers.get('Cookie
 function redirect(url,extra={}){return new Response(null,{status:302,headers:{...headers,Location:url,...extra}});}
 async function session(request,env){return unseal(cookies(request)[SESSION],env.SESSION_KEY);}
 async function github(path,token,options={}){
- const response=await fetch('https://api.github.com/'+path,{...options,redirect:'error',headers:{'User-Agent':'ONVIF-Spec-Review-test','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',Authorization:'Bearer '+token,...options.headers}});
+ const response=await fetch('https://api.github.com/'+path,{...options,redirect:'manual',headers:{'User-Agent':'ONVIF-Spec-Review-test','Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28',Authorization:'Bearer '+token,...options.headers}});
  if(!response.ok)throw Error('GitHub returned '+response.status+'. Check your app installation, PR access and pending reviews on GitHub.');
  return response.status===204?{}:response.json();
 }
 async function snapshot(number){
- const index=await fetch(UPSTREAM+'site.json',{cache:'no-store',redirect:'error'});if(!index.ok)throw Error('Published test comparisons are unavailable.');const manifest=await index.json();
+ const index=await fetch(UPSTREAM+'site.json',{cache:'no-store',redirect:'manual'});if(!index.ok)throw Error('Published test comparisons are unavailable.');const manifest=await index.json();
  if(manifest.repository!==REPOSITORY)throw Error('Invalid published test repository.');
  const entry=manifest.prs.find(p=>p.number===number);
  if(!entry||entry.error||!/^data\/pr-\d+-[a-f0-9]{16}\.json$/.test(entry.data))throw Error('The test PR is not in the published comparison.');
- const response=await fetch(UPSTREAM+entry.data,{redirect:'error'});if(!response.ok)throw Error('Published test comparison is unavailable.');
+ const response=await fetch(UPSTREAM+entry.data,{redirect:'manual'});if(!response.ok)throw Error('Published test comparison is unavailable.');
  const value=await response.json();return {...value,repository:manifest.repository};
 }
 function sameOrigin(request,url){if(request.headers.get('Origin')!==url.origin)throw Error('Cross-origin writes are not allowed.');}
@@ -38,7 +38,7 @@ export default {async fetch(request,env){
   if(path==='/auth/callback'&&request.method==='GET'){
    const flow=await unseal(cookies(request)[FLOW],env.SESSION_KEY);
    if(!flow||flow.state!==url.searchParams.get('state')||!url.searchParams.get('code'))throw Error('Sign-in expired or was cancelled. Start again from the review page.');
-   const exchange=await fetch('https://github.com/login/oauth/access_token',{method:'POST',redirect:'error',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify({client_id:env.GITHUB_CLIENT_ID,client_secret:env.GITHUB_CLIENT_SECRET,code:url.searchParams.get('code'),code_verifier:flow.verifier,redirect_uri:url.origin+'/auth/callback'})});
+   const exchange=await fetch('https://github.com/login/oauth/access_token',{method:'POST',redirect:'manual',headers:{Accept:'application/json','Content-Type':'application/json'},body:JSON.stringify({client_id:env.GITHUB_CLIENT_ID,client_secret:env.GITHUB_CLIENT_SECRET,code:url.searchParams.get('code'),code_verifier:flow.verifier,redirect_uri:url.origin+'/auth/callback'})});
    const grant=await exchange.json();if(!exchange.ok||!grant.access_token||grant.error)throw Error('GitHub sign-in could not be completed.');
    const identity=await github('user',grant.access_token);
    const age=Math.min(3600,Math.max(1,Number(grant.expires_in)||3600));
@@ -66,7 +66,8 @@ export default {async fetch(request,env){
   }
   if(request.method!=='GET'&&request.method!=='HEAD')return json({error:'Method not allowed.'},405);
   if(!/^\/(?:|index\.html|app\.js|pages\.js|review-core\.js|site\.json|data\/pr-\d+-[a-f0-9]{16}\.json|assets\/[a-f0-9]{64}\.(?:png|jpg|gif|webp|svg))$/.test(path))return json({error:'Not found.'},404);
-  const upstream=await fetch(UPSTREAM+(path==='/'?'index.html':path.slice(1)),{redirect:'error',cache:'no-store'});
+  const upstream=await fetch(UPSTREAM+(path==='/'?'index.html':path.slice(1)),{redirect:'manual',cache:'no-store'});
+  if(upstream.status>=300&&upstream.status<400)throw Error('Published viewer redirected unexpectedly.');
   const response=new Response(upstream.body,upstream);response.headers.set('Cache-Control','no-cache');response.headers.set('Referrer-Policy','no-referrer');return response;
  }catch(error){return json({error:error.message||'Request failed.'},400);}
 }};
